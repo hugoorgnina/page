@@ -22,6 +22,23 @@ function screenConstraints() {
   return { width: { ideal: Math.round(h * 16 / 9) }, height: { ideal: h }, frameRate: { ideal: fps, max: fps } };
 }
 
+// Volumen por persona (0 a 2 = 0% a 200%), guardado en el aparato
+let volumes = {};
+try { volumes = JSON.parse(localStorage.getItem('volumes') || '{}'); } catch (_) {}
+function getVolume(userId) {
+  const v = volumes[userId];
+  return typeof v === 'number' && v >= 0 && v <= 2 ? v : 1;
+}
+function setVolume(userId, v) {
+  volumes[userId] = v;
+  localStorage.setItem('volumes', JSON.stringify(volumes));
+  const peer = state.voice.peers.get(userId);
+  if (peer) {
+    if (peer.gain) peer.gain.gain.value = v;
+    else if (peer.audioEl) peer.audioEl.volume = Math.min(v, 1);
+  }
+}
+
 const state = {
   token: localStorage.getItem('token') || null,
   me: null,
@@ -1052,7 +1069,7 @@ async function joinVoice(channelId, withVideo) {
   switchView('voice');
   $('voiceLobby').classList.add('hidden');
   $('voiceRoom').classList.remove('hidden');
-  setAvatar($('aloneAvatar'), state.me);
+  state.voice.selfTile = makeTile(state.me, true); // mi propio cuadro en la cuadrícula
   state.socket.emit('voice-join', { channel: channelId });
   requestWakeLock();
   syncPeers();
@@ -1065,6 +1082,8 @@ function leaveVoice(silent) {
   state.voice.channel = null;
   for (const peerId of [...state.voice.peers.keys()]) removePeer(peerId);
   stopLocalMedia();
+  if (state.voice.selfTile) { state.voice.selfTile.root.remove(); state.voice.selfTile = null; }
+  $('tiles').classList.remove('has-expanded');
   $('voiceRoom').classList.add('hidden');
   $('voiceLobby').classList.remove('hidden');
   releaseWakeLock();
@@ -1076,7 +1095,7 @@ function stopLocalMedia() {
   if (state.voice.micStream) { state.voice.micStream.getTracks().forEach((t) => t.stop()); state.voice.micStream = null; }
   stopCam();
   stopScreen();
-  $('localPip').classList.remove('visible');
+  updateSelfPreview();
 }
 
 // Crea/cierra conexiones según quién está en el canal.
@@ -1143,11 +1162,7 @@ function createPeer(member) {
   pc.onicecandidate = ({ candidate }) => sendRtc(peer, { candidate });
   pc.ontrack = ({ track }) => {
     if (track.kind === 'audio') {
-      peer.audioEl = document.createElement('audio');
-      peer.audioEl.autoplay = true;
-      peer.audioEl.srcObject = new MediaStream([track]);
-      $('remoteAudios').appendChild(peer.audioEl);
-      peer.audioEl.play().catch(() => {});
+      attachPeerAudio(peer, track);
     } else {
       peer.tile.video.srcObject = new MediaStream([track]);
       const show = (on) => peer.tile.root.classList.toggle('hasvideo', on);
@@ -1170,6 +1185,29 @@ function createPeer(member) {
 
 function sendRtc(peer, payload) {
   state.socket.emit('rtc', { channel: state.voice.channel, to: peer.id, payload });
+}
+
+// El audio de cada persona pasa por un nodo de ganancia (volumen 0-200%).
+// El <audio> silenciado es necesario: sin él, el navegador no hace fluir
+// el audio remoto hacia WebAudio.
+function attachPeerAudio(peer, track) {
+  const stream = new MediaStream([track]);
+  peer.audioEl = document.createElement('audio');
+  peer.audioEl.autoplay = true;
+  peer.audioEl.srcObject = stream;
+  $('remoteAudios').appendChild(peer.audioEl);
+  try {
+    const c = ctx();
+    peer.srcNode = c.createMediaStreamSource(stream);
+    peer.gain = c.createGain();
+    peer.gain.gain.value = getVolume(peer.id);
+    peer.srcNode.connect(peer.gain).connect(c.destination);
+    peer.audioEl.muted = true;
+  } catch (_) {
+    // sin WebAudio: volumen normal limitado a 100%
+    peer.audioEl.volume = Math.min(getVolume(peer.id), 1);
+  }
+  peer.audioEl.play().catch(() => {});
 }
 
 async function handleRtc(peer, { description, candidate }) {
@@ -1199,6 +1237,7 @@ function removePeer(peerId) {
   peer.pc.onicecandidate = null;
   peer.pc.ontrack = null;
   peer.pc.close();
+  try { if (peer.srcNode) peer.srcNode.disconnect(); if (peer.gain) peer.gain.disconnect(); } catch (_) {}
   if (peer.audioEl) peer.audioEl.remove();
   if (peer.tile) {
     if (peer.tile.root.classList.contains('expanded')) $('tiles').classList.remove('has-expanded');
@@ -1208,13 +1247,15 @@ function removePeer(peerId) {
   updateTilesLayout();
 }
 
-function makeTile(member) {
+function makeTile(member, isSelf) {
   const root = document.createElement('div');
-  root.className = 'tile';
+  root.className = 'tile' + (isSelf ? ' self' : '');
   const video = document.createElement('video');
   video.autoplay = true;
   video.playsInline = true;
+  video.muted = isSelf || undefined;
   video.setAttribute('playsinline', '');
+  if (isSelf) video.setAttribute('muted', '');
   root.appendChild(video);
   const wrap = document.createElement('div');
   wrap.className = 'tile-avatar-wrap';
@@ -1225,12 +1266,25 @@ function makeTile(member) {
   root.appendChild(wrap);
   const name = document.createElement('div');
   name.className = 'tile-name';
-  name.textContent = member.name;
+  name.textContent = isSelf ? 'Tú' : member.name;
   root.appendChild(name);
   const mic = document.createElement('div');
   mic.className = 'tile-mic';
   mic.textContent = '🔇';
   root.appendChild(mic);
+
+  // Botón 🔊: volumen de esa persona (0-200%)
+  if (!isSelf) {
+    const vol = document.createElement('button');
+    vol.className = 'tile-vol';
+    vol.textContent = '🔊';
+    vol.title = 'Volumen de ' + member.name;
+    vol.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openVolume(member);
+    });
+    root.appendChild(vol);
+  }
 
   // Tocar el cuadro: se expande a toda la sala (otro toque lo devuelve)
   root.addEventListener('click', () => {
@@ -1261,12 +1315,12 @@ function makeTile(member) {
 }
 
 function updateTilesLayout() {
-  const n = state.voice.peers.size;
+  const n = state.voice.peers.size + (state.voice.selfTile ? 1 : 0);
   const tiles = $('tiles');
   tiles.classList.remove('n2', 'n3', 'n4');
   if (n === 2) tiles.classList.add('n2');
   else if (n >= 3) tiles.classList.add('n4');
-  $('voiceAlone').classList.toggle('hidden', n > 0);
+  $('voiceAlone').classList.toggle('hidden', state.voice.peers.size > 0 || !state.voice.channel);
 }
 
 function sendVoiceStatus() {
@@ -1307,11 +1361,12 @@ async function toggleCam(on) {
       toast('Necesito permiso de la cámara 📹');
       return;
     }
-    showLocalPreview(state.voice.camTrack, false);
+    updateSelfPreview();
     replaceVideoEverywhere(state.voice.camTrack);
   } else {
     stopCam();
     replaceVideoEverywhere(null);
+    updateSelfPreview();
   }
   $('btnCam').classList.toggle('active', !!state.voice.camTrack);
   sendVoiceStatus();
@@ -1319,7 +1374,6 @@ async function toggleCam(on) {
 
 function stopCam() {
   if (state.voice.camTrack) { state.voice.camTrack.stop(); state.voice.camTrack = null; }
-  if (!state.voice.screenTrack) $('localPip').classList.remove('visible');
   $('btnCam').classList.remove('active');
 }
 
@@ -1332,7 +1386,7 @@ $('btnScreen').addEventListener('click', async () => {
     return; // canceló
   }
   stopCam();
-  showLocalPreview(state.voice.screenTrack, true);
+  updateSelfPreview();
   replaceVideoEverywhere(state.voice.screenTrack);
   $('btnScreen').classList.add('active');
   state.voice.screenTrack.onended = () => stopScreenAndRestore();
@@ -1347,16 +1401,75 @@ function stopScreen() {
 function stopScreenAndRestore() {
   stopScreen();
   replaceVideoEverywhere(null);
-  $('localPip').classList.remove('visible');
+  updateSelfPreview();
   sendVoiceStatus();
 }
 
-function showLocalPreview(track, isScreen) {
-  const v = $('localVideo');
-  v.srcObject = new MediaStream([track]);
-  v.classList.toggle('screen', isScreen);
-  $('localPip').classList.add('visible');
+// Mi cuadro en la cuadrícula muestra mi cámara o mi pantalla (o mi avatar)
+function updateSelfPreview() {
+  const tile = state.voice.selfTile;
+  if (!tile) return;
+  const track = state.voice.screenTrack || state.voice.camTrack;
+  tile.root.classList.toggle('screen', !!state.voice.screenTrack);
+  if (track) {
+    tile.video.srcObject = new MediaStream([track]);
+    tile.root.classList.add('hasvideo');
+  } else {
+    tile.video.srcObject = null;
+    tile.root.classList.remove('hasvideo');
+    if (tile.root.classList.contains('expanded')) {
+      tile.root.classList.remove('expanded');
+      $('tiles').classList.remove('has-expanded');
+    }
+  }
 }
+
+/* ---- Volumen por persona ---- */
+let volumeUserId = null;
+function openVolume(member) {
+  volumeUserId = member.id;
+  $('volumeTitle').textContent = '🔊 Volumen de ' + member.name;
+  const v = Math.round(getVolume(member.id) * 100);
+  $('volumeSlider').value = v;
+  $('volumeValue').textContent = v + '%';
+  $('volumeOverlay').classList.remove('hidden');
+}
+$('volumeSlider').addEventListener('input', () => {
+  const v = +$('volumeSlider').value;
+  $('volumeValue').textContent = v + '%';
+  if (volumeUserId) setVolume(volumeUserId, v / 100);
+});
+$('btnVolumeReset').addEventListener('click', () => {
+  $('volumeSlider').value = 100;
+  $('volumeValue').textContent = '100%';
+  if (volumeUserId) setVolume(volumeUserId, 1);
+});
+$('btnCloseVolume').addEventListener('click', () => $('volumeOverlay').classList.add('hidden'));
+$('volumeOverlay').addEventListener('click', (e) => { if (e.target.id === 'volumeOverlay') $('volumeOverlay').classList.add('hidden'); });
+
+/* ---- Ventana flotante (Picture in Picture): seguir viéndose usando otras apps ---- */
+$('btnPip').addEventListener('click', async () => {
+  // elige el video: el expandido, si no el primero con video de otra persona, si no el mío
+  let video = document.querySelector('#tiles .tile.expanded.hasvideo video')
+    || document.querySelector('#tiles .tile.hasvideo:not(.self) video')
+    || document.querySelector('#tiles .tile.hasvideo video');
+  if (!video) { toast('Nadie tiene video prendido ahora mismo 📹'); return; }
+  try {
+    if (document.pictureInPictureElement) {
+      await document.exitPictureInPicture();
+    } else if (video.requestPictureInPicture) {
+      await video.requestPictureInPicture();
+      toast('Ya puedes salir a otras apps: el video queda flotando y el audio sigue 🪟');
+    } else if (video.webkitSetPresentationMode) {
+      video.webkitSetPresentationMode('picture-in-picture');
+      toast('Ya puedes salir a otras apps: el video queda flotando y el audio sigue 🪟');
+    } else {
+      toast('Tu navegador no permite ventana flotante 😕');
+    }
+  } catch (_) {
+    toast('No se pudo abrir la ventana flotante');
+  }
+});
 
 async function requestWakeLock() {
   try { state.wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}

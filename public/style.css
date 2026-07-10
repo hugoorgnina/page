@@ -232,12 +232,19 @@ input::placeholder { color: var(--muted2); }
 }
 .tile .tile-mic { position: absolute; right: 8px; bottom: 8px; z-index: 2; font-size: 13px; display: none; }
 .tile.muted .tile-mic { display: block; }
-.tile-fs {
-  position: absolute; top: 8px; right: 8px; z-index: 3; background: rgba(0,0,0,.55); color: #fff;
-  border-radius: 6px; width: 34px; height: 34px; font-size: 16px;
+.tile-fs, .tile-vol {
+  position: absolute; z-index: 3; background: rgba(0,0,0,.6); color: #fff;
+  border-radius: 8px; width: 38px; height: 38px; font-size: 17px;
   display: none; align-items: center; justify-content: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,.4);
 }
+.tile-fs { top: 8px; right: 8px; }
+.tile-vol { top: 8px; left: 8px; display: flex; }
+.tile.self .tile-vol { display: none; }
 .tile.hasvideo .tile-fs { display: flex; }
+/* mi propia cámara se ve en espejo (la pantalla compartida no) */
+.tile.self video { transform: scaleX(-1); }
+.tile.self.screen video { transform: none; }
 /* Expandir un cuadro a toda el área tocándolo */
 .tiles.has-expanded { grid-template-columns: 1fr !important; }
 .tiles.has-expanded .tile:not(.expanded) { display: none; }
@@ -245,20 +252,15 @@ input::placeholder { color: var(--muted2); }
 .tile:fullscreen { background: #000; }
 .tile:fullscreen video { object-fit: contain; }
 .voice-alone {
-  position: absolute; inset: 0; display: flex; flex-direction: column; gap: 12px;
-  align-items: center; justify-content: center;
-  background: radial-gradient(circle at 50% 40%, #2f3140 0%, var(--bg-deep) 70%); z-index: 1;
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 6;
+  background: rgba(30,31,34,.9); color: var(--muted); font-size: 13px;
+  padding: 8px 16px; border-radius: 18px; border: 1px solid var(--divider);
+  white-space: nowrap;
 }
 
-.local-pip {
-  position: absolute; right: 12px; top: 12px; width: 104px; aspect-ratio: 3/4;
-  border-radius: 10px; overflow: hidden; background: #000;
-  box-shadow: 0 4px 14px rgba(0,0,0,.55); border: 1px solid var(--divider);
-  display: none; z-index: 5;
-}
-.local-pip.visible { display: block; }
-#localVideo { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
-#localVideo.screen { transform: none; object-fit: contain; }
+.volume-row { display: flex; align-items: center; gap: 12px; font-size: 20px; }
+.volume-row input[type="range"] { flex: 1; accent-color: var(--blurple); height: 30px; }
+.volume-value { text-align: center; font-size: 26px; font-weight: 700; color: var(--text-strong); }
 
 /* Controles flotantes tipo Discord */
 .call-controls {

@@ -107,7 +107,12 @@ const server = http.createServer(app);
 const io = new Server(server, { maxHttpBufferSize: 1e6 });
 
 app.use(express.json({ limit: '16mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders(res, filePath) {
+    // el HTML nunca se cachea: así las actualizaciones llegan al instante
+    if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+  }
+}));
 app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '30d' }));
 
 function auth(req, res, next) {

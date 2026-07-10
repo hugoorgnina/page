@@ -11,7 +11,7 @@
   <link rel="manifest" href="/manifest.json" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icon-180.png" />
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/style.css?v=8" />
 </head>
 <body>
 
@@ -90,18 +90,13 @@
       <div id="voiceRoom" class="voice-room hidden">
         <div class="video-area" id="videoArea">
           <div id="tiles" class="tiles"></div>
-          <div id="voiceAlone" class="voice-alone hidden">
-            <div class="avatar big-avatar" id="aloneAvatar"></div>
-            <div class="remote-label">Esperando a que alguien entre…</div>
-          </div>
-          <div class="local-pip" id="localPip">
-            <video id="localVideo" autoplay playsinline muted></video>
-          </div>
+          <div id="voiceAlone" class="voice-alone hidden">🕐 Esperando a que alguien entre…</div>
         </div>
         <div class="call-controls">
           <button id="btnMic" class="ctrl-btn active" title="Micrófono">🎙️</button>
           <button id="btnCam" class="ctrl-btn" title="Cámara">📹</button>
           <button id="btnScreen" class="ctrl-btn" title="Compartir pantalla">🖥️</button>
+          <button id="btnPip" class="ctrl-btn" title="Ventana flotante para usar otras apps">🪟</button>
           <button id="btnLeaveVoice" class="ctrl-btn danger" title="Salir">📵</button>
         </div>
       </div>
@@ -243,9 +238,24 @@
     </div>
   </div>
 
+  <!-- Volumen por persona -->
+  <div id="volumeOverlay" class="overlay hidden">
+    <div class="settings-card">
+      <h2 id="volumeTitle">Volumen</h2>
+      <div class="volume-row">
+        <span>🔈</span>
+        <input id="volumeSlider" type="range" min="0" max="200" step="5" />
+        <span>🔊</span>
+      </div>
+      <div id="volumeValue" class="volume-value">100%</div>
+      <button id="btnVolumeReset" class="btn-secondary">Volver al 100%</button>
+      <button id="btnCloseVolume" class="btn-ghost">Cerrar</button>
+    </div>
+  </div>
+
   <div id="toast" class="toast hidden"></div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/app.js"></script>
+  <script src="/app.js?v=8"></script>
 </body>
 </html>
