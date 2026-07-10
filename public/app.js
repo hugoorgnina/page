@@ -7,6 +7,21 @@
 const $ = (id) => document.getElementById(id);
 const CALL_CHANNEL = 'llamada';
 
+// Preferencias del usuario (se guardan en el aparato)
+const PREFS_DEFAULT = { noise: true, echo: true, agc: true, res: 720, fps: 30 };
+let prefs = { ...PREFS_DEFAULT };
+try { prefs = { ...PREFS_DEFAULT, ...JSON.parse(localStorage.getItem('prefs') || '{}') }; } catch (_) {}
+function savePrefs() { localStorage.setItem('prefs', JSON.stringify(prefs)); }
+
+function micConstraints() {
+  return { echoCancellation: prefs.echo, noiseSuppression: prefs.noise, autoGainControl: prefs.agc };
+}
+function screenConstraints() {
+  const h = [480, 720, 1080].includes(prefs.res) ? prefs.res : 720;
+  const fps = [15, 30, 60].includes(prefs.fps) ? prefs.fps : 30;
+  return { width: { ideal: Math.round(h * 16 / 9) }, height: { ideal: h }, frameRate: { ideal: fps, max: fps } };
+}
+
 const state = {
   token: localStorage.getItem('token') || null,
   me: null,
@@ -1025,9 +1040,7 @@ async function joinVoice(channelId, withVideo) {
   if (state.voice.channel === channelId) { switchView('voice'); return; }
   if (state.voice.channel) leaveVoice(true);
   try {
-    state.voice.micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-    });
+    state.voice.micStream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
   } catch (e) {
     toast('Necesito permiso del micrófono 🎙️');
     return;
@@ -1187,7 +1200,10 @@ function removePeer(peerId) {
   peer.pc.ontrack = null;
   peer.pc.close();
   if (peer.audioEl) peer.audioEl.remove();
-  if (peer.tile) peer.tile.root.remove();
+  if (peer.tile) {
+    if (peer.tile.root.classList.contains('expanded')) $('tiles').classList.remove('has-expanded');
+    peer.tile.root.remove();
+  }
   state.voice.peers.delete(peerId);
   updateTilesLayout();
 }
@@ -1215,6 +1231,31 @@ function makeTile(member) {
   mic.className = 'tile-mic';
   mic.textContent = '🔇';
   root.appendChild(mic);
+
+  // Tocar el cuadro: se expande a toda la sala (otro toque lo devuelve)
+  root.addEventListener('click', () => {
+    if (!root.classList.contains('hasvideo')) return;
+    const tiles = $('tiles');
+    const wasExpanded = root.classList.contains('expanded');
+    tiles.querySelectorAll('.tile.expanded').forEach((t) => t.classList.remove('expanded'));
+    tiles.classList.remove('has-expanded');
+    if (!wasExpanded) {
+      root.classList.add('expanded');
+      tiles.classList.add('has-expanded');
+    }
+  });
+  // Botón ⛶: pantalla completa de verdad (en iPhone usa el reproductor nativo)
+  const fs = document.createElement('button');
+  fs.className = 'tile-fs';
+  fs.textContent = '⛶';
+  fs.title = 'Pantalla completa';
+  fs.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (root.requestFullscreen) root.requestFullscreen().catch(() => {});
+    else if (video.webkitEnterFullscreen) { try { video.webkitEnterFullscreen(); } catch (_) {} }
+  });
+  root.appendChild(fs);
+
   $('tiles').appendChild(root);
   return { root, video };
 }
@@ -1285,7 +1326,7 @@ function stopCam() {
 $('btnScreen').addEventListener('click', async () => {
   if (state.voice.screenTrack) { stopScreenAndRestore(); return; }
   try {
-    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: screenConstraints(), audio: false });
     state.voice.screenTrack = stream.getVideoTracks()[0];
   } catch (e) {
     return; // canceló
@@ -1381,9 +1422,77 @@ $('btnRejectCall').addEventListener('click', () => {
 
 /* ================= Ajustes / perfil ================= */
 
+function renderPrefsUI() {
+  $('swNoise').classList.toggle('on', prefs.noise);
+  $('swEcho').classList.toggle('on', prefs.echo);
+  $('swAgc').classList.toggle('on', prefs.agc);
+  $('segRes').querySelectorAll('button').forEach((b) => b.classList.toggle('active', +b.dataset.v === prefs.res));
+  $('segFps').querySelectorAll('button').forEach((b) => b.classList.toggle('active', +b.dataset.v === prefs.fps));
+}
+
+// Aplica los ajustes de audio al micro en vivo, sin reconectar
+async function applyMicPrefs() {
+  const stream = state.voice.micStream;
+  if (!stream) return;
+  const track = stream.getAudioTracks()[0];
+  const want = micConstraints();
+  try { await track.applyConstraints(want); } catch (_) {}
+  const s = track.getSettings();
+  if (s.noiseSuppression === want.noiseSuppression
+    && s.echoCancellation === want.echoCancellation
+    && s.autoGainControl === want.autoGainControl) return;
+  // Este navegador no lo cambia en vivo: apaga el micro viejo primero
+  // (si sigue activo, el nuevo hereda sus ajustes) y pide uno nuevo
+  track.stop();
+  let fresh = null;
+  try {
+    fresh = await navigator.mediaDevices.getUserMedia({ audio: want });
+  } catch (_) {
+    try { fresh = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (_) { return; }
+  }
+  const freshTrack = fresh.getAudioTracks()[0];
+  freshTrack.enabled = state.voice.micOn;
+  for (const peer of state.voice.peers.values()) {
+    const sender = peer.pc.getSenders().find((x) => x.track && x.track.kind === 'audio');
+    if (sender) sender.replaceTrack(freshTrack);
+  }
+  state.voice.micStream = fresh;
+}
+// Aplica resolución/fps a la pantalla compartida en vivo
+async function applyScreenPrefs() {
+  if (state.voice.screenTrack) {
+    try { await state.voice.screenTrack.applyConstraints(screenConstraints()); } catch (_) {}
+  }
+}
+
+function bindSwitch(id, key) {
+  $(id).addEventListener('click', () => {
+    prefs[key] = !prefs[key];
+    savePrefs();
+    renderPrefsUI();
+    applyMicPrefs();
+  });
+}
+bindSwitch('swNoise', 'noise');
+bindSwitch('swEcho', 'echo');
+bindSwitch('swAgc', 'agc');
+$('segRes').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+  prefs.res = +b.dataset.v;
+  savePrefs();
+  renderPrefsUI();
+  applyScreenPrefs();
+}));
+$('segFps').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+  prefs.fps = +b.dataset.v;
+  savePrefs();
+  renderPrefsUI();
+  applyScreenPrefs();
+}));
+
 $('btnSettings').addEventListener('click', () => {
   $('settingsName').value = state.me.name;
   setAvatar($('myAvatar'), state.me);
+  renderPrefsUI();
   $('settingsOverlay').classList.remove('hidden');
 });
 $('btnCloseSettings').addEventListener('click', () => $('settingsOverlay').classList.add('hidden'));

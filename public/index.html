@@ -160,7 +160,7 @@
 
   <div id="settingsOverlay" class="overlay hidden">
     <div class="settings-card">
-      <h2>Mi perfil</h2>
+      <h2>Ajustes</h2>
       <div class="settings-avatar-wrap">
         <div class="avatar big-avatar" id="myAvatar"></div>
         <button id="btnChangeAvatar" class="btn-small">Cambiar foto</button>
@@ -168,7 +168,28 @@
       </div>
       <label>Nombre</label>
       <input id="settingsName" type="text" maxlength="30" />
-      <button id="btnSaveProfile" class="btn-primary">Guardar</button>
+      <button id="btnSaveProfile" class="btn-primary">Guardar perfil</button>
+
+      <h3 class="settings-section">🎙️ Voz y audio</h3>
+      <div class="setting-row"><span>Supresión de ruido</span><button id="swNoise" class="switch"></button></div>
+      <div class="setting-row"><span>Cancelación de eco</span><button id="swEcho" class="switch"></button></div>
+      <div class="setting-row"><span>Volumen automático del micro</span><button id="swAgc" class="switch"></button></div>
+
+      <h3 class="settings-section">🖥️ Compartir pantalla</h3>
+      <label>Resolución</label>
+      <div class="seg" id="segRes">
+        <button data-v="480">480p</button>
+        <button data-v="720">720p</button>
+        <button data-v="1080">1080p</button>
+      </div>
+      <label>Cuadros por segundo</label>
+      <div class="seg" id="segFps">
+        <button data-v="15">15 fps</button>
+        <button data-v="30">30 fps</button>
+        <button data-v="60">60 fps</button>
+      </div>
+      <p class="auth-hint" style="text-align:left">Más resolución y fps = mejor imagen pero gasta más internet. Si va lento, baja a 480p / 15 fps.</p>
+
       <button id="btnLogout" class="btn-ghost">Cerrar sesión</button>
       <button id="btnCloseSettings" class="btn-ghost">Cerrar</button>
     </div>
