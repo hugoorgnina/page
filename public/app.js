@@ -1,33 +1,36 @@
 /* ============================================================
-   Nuestro Chat — cliente
-   Chat de texto + fotos, sala de voz con cámara y pantalla,
-   llamadas estilo WhatsApp. Pensado para el celular.
+   Ale y Hugo — cliente
+   Servers estilo Discord (canales de texto y de voz grupales),
+   buscador de servers, llamadas directas, fotos y perfil.
    ============================================================ */
 
 const $ = (id) => document.getElementById(id);
+const CALL_CHANNEL = 'llamada';
 
 const state = {
   token: localStorage.getItem('token') || null,
   me: null,
-  other: null, // la otra persona (solo son 2)
+  users: new Map(), // id -> {id,name,avatar}
   config: null,
   socket: null,
   view: 'chat',
   unread: 0,
-  // voz
-  inVoice: false,
-  wantVideoOnJoin: false,
-  voiceMembers: [],
-  micStream: null,
-  camTrack: null,
-  screenTrack: null,
-  micOn: true,
-  pc: null,
-  audioTx: null,
-  videoTx: null,
-  makingOffer: false,
-  ignoreOffer: false,
-  polite: false,
+  lastOnline: [],
+  // servers
+  servers: [], // mis servers, completos
+  currentServerId: null,
+  currentChannelId: null, // canal de texto abierto
+  openServerId: null, // tarjeta expandida en la pestaña Servers
+  voiceStates: {}, // channelId -> [publicUser]
+  // sesión de voz
+  voice: {
+    channel: null,
+    micStream: null,
+    camTrack: null,
+    screenTrack: null,
+    micOn: true,
+    peers: new Map() // userId -> peer
+  },
   // llamadas
   calling: false,
   incoming: null,
@@ -58,16 +61,21 @@ async function api(path, opts = {}) {
   return data;
 }
 
+function getUser(id) {
+  return state.users.get(id) || { id, name: '?', avatar: null };
+}
+
 function setAvatar(el, user) {
   el.innerHTML = '';
+  el.style.background = '';
   if (user && user.avatar) {
     const img = document.createElement('img');
     img.src = user.avatar;
     img.alt = '';
     el.appendChild(img);
   } else {
-    el.textContent = user && user.name ? user.name[0].toUpperCase() : '?';
-    el.style.background = user ? colorFor(user.id) : 'var(--bg3)';
+    el.textContent = user && user.name ? [...user.name][0].toUpperCase() : '?';
+    el.style.background = user ? colorFor(user.id || user.name) : 'var(--bg3)';
   }
 }
 
@@ -90,7 +98,6 @@ function fmtDay(ts) {
   return d.toLocaleDateString('es', { day: 'numeric', month: 'long' });
 }
 
-// Comprime una imagen en el navegador antes de subirla (clave en el celular)
 function compressImage(file, maxSide = 1600, quality = 0.85) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -112,7 +119,7 @@ function compressImage(file, maxSide = 1600, quality = 0.85) {
   });
 }
 
-/* ================= Sonidos (generados, sin archivos) ================= */
+/* ================= Sonidos ================= */
 
 let audioCtx = null;
 function ctx() {
@@ -159,17 +166,15 @@ function notifySound() { beep(740, 0.12, 0, 0.15); beep(988, 0.15, 0.12, 0.15); 
 
 async function boot() {
   state.config = await fetch('/api/config').then((r) => r.json()).catch(() => ({ iceServers: [] }));
-
   if (state.config.inviteRequired) $('authInvite').classList.remove('hidden');
   if (state.config.googleClientId) setupGoogle();
 
   if (state.token) {
     try {
-      await loadMe();
+      await loadCore();
       enterApp();
       return;
     } catch (e) {
-      // El servidor pudo reiniciarse (plan gratis): intenta re-entrar con credenciales guardadas
       const saved = JSON.parse(localStorage.getItem('creds') || 'null');
       if (saved) {
         try {
@@ -177,7 +182,7 @@ async function boot() {
           state.token = r.token;
           localStorage.setItem('token', r.token);
           await restoreAvatarIfNeeded(r.me);
-          await loadMe();
+          await loadCore();
           enterApp();
           return;
         } catch (_) {}
@@ -189,13 +194,20 @@ async function boot() {
   $('authScreen').classList.remove('hidden');
 }
 
-async function loadMe() {
-  const data = await api('/api/me');
-  state.me = data.me;
-  state.other = data.others[0] || null;
+async function loadCore() {
+  const me = await api('/api/me');
+  state.me = me.me;
+  await Promise.all([loadUsers(), loadServers()]);
+}
+async function loadUsers() {
+  const { users } = await api('/api/users');
+  state.users = new Map(users.map((u) => [u.id, u]));
+}
+async function loadServers() {
+  const { servers } = await api('/api/servers/mine');
+  state.servers = servers;
 }
 
-// Si el servidor se reinició y perdió mi avatar, lo vuelve a subir desde el celular
 async function restoreAvatarIfNeeded(me) {
   const cached = localStorage.getItem('avatarCache');
   if (cached && !me.avatar) {
@@ -224,7 +236,7 @@ async function doAuth(mode) {
     localStorage.setItem('token', r.token);
     localStorage.setItem('creds', JSON.stringify({ name, password, invite }));
     await restoreAvatarIfNeeded(r.me);
-    await loadMe();
+    await loadCore();
     enterApp();
   } catch (e) {
     $('authError').textContent = e.message;
@@ -242,7 +254,7 @@ function setupGoogle() {
           const r = await api('/api/google', { body: { credential: resp.credential } });
           state.token = r.token;
           localStorage.setItem('token', r.token);
-          await loadMe();
+          await loadCore();
           enterApp();
         } catch (e) {
           $('authError').textContent = e.message;
@@ -260,56 +272,121 @@ function setupGoogle() {
 function enterApp() {
   $('authScreen').classList.add('hidden');
   $('appScreen').classList.remove('hidden');
-  renderPeer();
   setAvatar($('myAvatar'), state.me);
   $('settingsName').value = state.me.name;
+
+  pickInitialChannel();
+  renderAll();
   connectSocket();
-  loadMessages();
+  if (state.currentChannelId) loadMessages(state.currentChannelId);
+  else switchView('servers');
+
   if ('Notification' in window && Notification.permission === 'default') {
-    // se pide al primer toque para que el navegador lo permita
     document.body.addEventListener('click', () => Notification.requestPermission(), { once: true });
   }
   if (!('getDisplayMedia' in (navigator.mediaDevices || {}))) {
-    $('btnScreen').classList.add('hidden'); // iPhone no deja compartir pantalla
+    $('btnScreen').classList.add('hidden');
   }
 }
 
-function renderPeer() {
-  const p = state.other;
-  $('peerName').textContent = p ? p.name : 'Esperando a tu persona…';
-  setAvatar($('peerAvatar'), p);
-  setAvatar($('remoteAvatar'), p);
-  setAvatar($('incomingAvatar'), p);
-  setAvatar($('outgoingAvatar'), p);
-  $('outgoingName').textContent = p ? p.name : '';
+function findMyChannel(channelId) {
+  for (const s of state.servers) {
+    const ch = s.channels.find((c) => c.id === channelId);
+    if (ch) return { server: s, channel: ch };
+  }
+  return null;
 }
 
-function setPeerStatus(online) {
-  const el = $('peerStatus');
-  el.textContent = online ? 'en línea' : 'desconectado';
-  el.classList.toggle('online', online);
+function pickInitialChannel() {
+  const saved = localStorage.getItem('lastChannel');
+  if (saved && findMyChannel(saved)) {
+    setCurrentChannel(saved, false);
+    return;
+  }
+  for (const s of state.servers) {
+    const ch = s.channels.find((c) => c.type === 'text');
+    if (ch) { setCurrentChannel(ch.id, false); return; }
+  }
+  state.currentChannelId = null;
+  state.currentServerId = null;
+}
+
+function setCurrentChannel(channelId, load = true) {
+  const found = findMyChannel(channelId);
+  if (!found) return;
+  state.currentChannelId = channelId;
+  state.currentServerId = found.server.id;
+  state.openServerId = found.server.id;
+  localStorage.setItem('lastChannel', channelId);
+  if (load) {
+    loadMessages(channelId);
+    renderAll();
+  }
+}
+
+function renderAll() {
+  renderTopbar();
+  renderChatEmptyState();
+  renderMyServers();
+  renderVoiceLobby();
+  renderVoiceBanner();
+}
+
+function renderTopbar() {
+  const found = state.currentChannelId ? findMyChannel(state.currentChannelId) : null;
+  if (found) {
+    $('topbarTitle').textContent = '# ' + found.channel.name;
+    $('topbarSub').textContent = found.server.name;
+    setAvatar($('topbarIcon'), { id: found.server.id, name: found.server.name, avatar: found.server.icon });
+  } else {
+    $('topbarTitle').textContent = 'Ale y Hugo';
+    $('topbarSub').textContent = '';
+    $('topbarIcon').innerHTML = '';
+    $('topbarIcon').textContent = '💜';
+  }
+}
+
+function renderChatEmptyState() {
+  const empty = !state.currentChannelId;
+  $('noChannel').classList.toggle('hidden', !empty);
+  $('messages').classList.toggle('hidden', empty);
+  $('inputBar').classList.toggle('hidden', empty);
+}
+
+function setPeerStatusOnline() {
+  // pequeño indicador: cuántos están en línea (además de mí)
+  const others = state.lastOnline.filter((id) => id !== state.me.id).length;
+  const sub = $('topbarSub');
+  const found = state.currentChannelId ? findMyChannel(state.currentChannelId) : null;
+  if (found) {
+    sub.textContent = found.server.name + (others > 0 ? ` · ${others} en línea` : '');
+  }
 }
 
 /* ---- Navegación ---- */
 $('navChat').addEventListener('click', () => switchView('chat'));
 $('navVoice').addEventListener('click', () => switchView('voice'));
+$('navServers').addEventListener('click', () => switchView('servers'));
+$('btnGoServers').addEventListener('click', () => switchView('servers'));
 
 function switchView(v) {
   state.view = v;
   $('viewChat').classList.toggle('hidden', v !== 'chat');
   $('viewVoice').classList.toggle('hidden', v !== 'voice');
+  $('viewServers').classList.toggle('hidden', v !== 'servers');
   $('navChat').classList.toggle('active', v === 'chat');
   $('navVoice').classList.toggle('active', v === 'voice');
+  $('navServers').classList.toggle('active', v === 'servers');
   if (v === 'chat') {
     state.unread = 0;
     updateBadge();
-    scrollMessages();
+    scrollMessages(true);
   }
 }
 function updateBadge() {
   const b = $('chatBadge');
   b.classList.toggle('hidden', state.unread === 0);
-  b.textContent = state.unread;
+  b.textContent = state.unread > 99 ? '99+' : state.unread;
 }
 
 /* ================= Socket ================= */
@@ -318,90 +395,107 @@ function connectSocket() {
   state.socket = io({ auth: { token: state.token } });
   const s = state.socket;
 
-  s.on('connect', () => {
-    if (state.inVoice) s.emit('voice-join'); // se cayó la conexión: vuelve a la sala solo
+  s.on('connect', async () => {
+    if (state.voice.channel) s.emit('voice-join', { channel: state.voice.channel });
+    try { await Promise.all([loadUsers(), loadServers()]); renderAll(); } catch (_) {}
   });
 
   s.on('presence', ({ online }) => {
     state.lastOnline = online;
-    if (state.other) setPeerStatus(online.includes(state.other.id));
+    setPeerStatusOnline();
   });
 
   s.on('users-updated', async () => {
+    try { await loadUsers(); renderAll(); } catch (_) {}
+  });
+
+  s.on('server-changed', async () => {
     try {
-      await loadMe();
-      renderPeer();
-      if (state.other && state.lastOnline) setPeerStatus(state.lastOnline.includes(state.other.id));
+      await loadServers();
+      if (state.currentChannelId && !findMyChannel(state.currentChannelId)) pickInitialChannel();
+      renderAll();
     } catch (_) {}
   });
 
+  s.on('server-list-updated', () => {
+    if (!$('searchResults').classList.contains('hidden')) doSearch();
+  });
+
   s.on('chat', (msg) => {
-    appendMessage(msg);
-    scrollMessages();
-    if (msg.from !== state.me.id) {
-      if (state.view !== 'chat' || document.hidden) {
-        state.unread++;
-        updateBadge();
-        notifySound();
-        showNotification(msg);
-      }
+    if (msg.channel === state.currentChannelId) {
+      appendMessage(msg);
+      scrollMessages();
+    }
+    if (msg.from !== state.me.id && (msg.channel !== state.currentChannelId || state.view !== 'chat' || document.hidden)) {
+      state.unread++;
+      updateBadge();
+      notifySound();
+      showNotification(msg);
     }
   });
 
-  s.on('typing', ({ userId }) => {
-    if (userId === state.me.id) return;
+  s.on('typing', ({ userId, channel }) => {
+    if (userId === state.me.id || channel !== state.currentChannelId) return;
     const t = $('typingIndicator');
+    t.textContent = `${getUser(userId).name} está escribiendo…`;
     t.classList.remove('hidden');
     clearTimeout(t._timer);
     t._timer = setTimeout(() => t.classList.add('hidden'), 2500);
   });
 
-  /* ---- Sala de voz ---- */
-  s.on('voice-state', ({ members }) => {
-    const before = state.voiceMembers.map((m) => m.id).join(',');
-    state.voiceMembers = members;
-    renderVoiceMembers();
-
-    const otherIn = members.some((m) => m.id !== state.me.id);
-    $('voiceDot').classList.toggle('hidden', members.length === 0);
-
-    // Aviso en el chat si el otro entró a la sala y yo no estoy
-    if (!state.inVoice && otherIn) {
-      $('voiceBanner').classList.remove('hidden');
-      $('voiceBannerText').textContent = `🎧 ${state.other ? state.other.name : 'Alguien'} está en la sala de voz`;
-      if (!before.includes(members.find((m) => m.id !== state.me.id).id)) notifySound();
-    } else {
-      $('voiceBanner').classList.add('hidden');
-    }
-
-    if (state.inVoice) {
-      if (otherIn && !state.pc) startPeer();
-      updateRemotePlaceholder();
-    }
+  /* ---- Voz ---- */
+  s.on('voice-snapshot', ({ states }) => {
+    state.voiceStates = {};
+    for (const st of states) state.voiceStates[st.channel] = st.members;
+    renderVoiceLobby();
+    renderMyServers();
+    renderVoiceBanner();
+    if (state.voice.channel) syncPeers();
   });
 
-  s.on('voice-peer-left', () => {
-    // El otro salió: yo me quedo en la sala esperando a que vuelva
-    closePeer();
-    updateRemotePlaceholder();
+  s.on('voice-state', ({ channel, members }) => {
+    if (members.length === 0) delete state.voiceStates[channel];
+    else state.voiceStates[channel] = members;
+    renderVoiceLobby();
+    renderMyServers();
+    renderVoiceBanner();
+    if (state.voice.channel === channel) syncPeers();
   });
 
-  s.on('rtc', ({ payload }) => onRtcMessage(payload));
+  s.on('rtc', ({ channel, from, payload }) => {
+    if (channel !== state.voice.channel) return;
+    let peer = state.voice.peers.get(from);
+    // si me llega una oferta nueva y mi conexión con él lleva rato trabada,
+    // la tiro y empiezo de cero con esta oferta
+    if (peer && payload.description && payload.description.type === 'offer'
+        && (peer.pc.connectionState === 'new' || peer.pc.connectionState === 'failed')
+        && Date.now() - peer.createdAt > 8000) {
+      removePeer(from);
+      peer = null;
+    }
+    if (!peer) {
+      peer = createPeer(getUser(from));
+      updateTilesLayout();
+    }
+    handleRtc(peer, payload);
+  });
 
-  s.on('voice-status', ({ status }) => {
-    $('remoteMicState').classList.toggle('hidden', status.mic !== false);
+  s.on('voice-status', ({ channel, userId, status }) => {
+    if (channel !== state.voice.channel) return;
+    const peer = state.voice.peers.get(userId);
+    if (peer && peer.tile) peer.tile.root.classList.toggle('muted', status && status.mic === false);
   });
 
   /* ---- Llamadas ---- */
   s.on('call-incoming', ({ from, video }) => {
-    if (state.inVoice || state.calling) { s.emit('call-reject'); return; }
+    if (state.voice.channel || state.calling) { s.emit('call-reject'); return; }
     state.incoming = { from, video };
     $('incomingName').textContent = from.name;
     $('incomingType').textContent = video ? 'Videollamada entrante' : 'Llamada entrante';
     setAvatar($('incomingAvatar'), from);
     $('incomingCall').classList.remove('hidden');
     startRingtone(true);
-    showNotification({ type: 'call', from: from.name, video });
+    showNotification({ type: 'call', fromUser: from, video });
   });
 
   s.on('call-accepted', () => {
@@ -410,7 +504,7 @@ function connectSocket() {
     $('outgoingCall').classList.add('hidden');
     const video = state.calling === 'video';
     state.calling = false;
-    joinVoice(video);
+    joinVoice(CALL_CHANNEL, video);
   });
 
   s.on('call-rejected', () => {
@@ -418,7 +512,7 @@ function connectSocket() {
     stopRingtone();
     state.calling = false;
     $('outgoingCall').classList.add('hidden');
-    toast('No contestó la llamada 💔');
+    toast('No contestaron la llamada 💔');
   });
 
   s.on('call-cancelled', () => {
@@ -437,9 +531,11 @@ function connectSocket() {
 function showNotification(msg) {
   if (!('Notification' in window) || Notification.permission !== 'granted' || !document.hidden) return;
   try {
-    const from = state.other ? state.other.name : 'Mensaje';
-    if (msg.type === 'call') new Notification(`📞 ${msg.from}`, { body: msg.video ? 'Videollamada entrante' : 'Llamada entrante' });
-    else new Notification(from, { body: msg.type === 'image' ? '📷 Foto' : msg.text });
+    if (msg.type === 'call') {
+      new Notification(`📞 ${msg.fromUser.name}`, { body: msg.video ? 'Videollamada entrante' : 'Llamada entrante' });
+    } else {
+      new Notification(getUser(msg.from).name, { body: msg.type === 'image' ? '📷 Foto' : msg.text });
+    }
   } catch (_) {}
 }
 
@@ -447,14 +543,16 @@ function showNotification(msg) {
 
 let lastDay = null;
 
-async function loadMessages() {
+async function loadMessages(channelId) {
   try {
-    const { messages } = await api('/api/messages');
+    const { messages } = await api('/api/channels/' + channelId + '/messages');
     $('messages').innerHTML = '';
     lastDay = null;
     messages.forEach(appendMessage);
     scrollMessages(true);
-  } catch (_) {}
+  } catch (_) {
+    $('messages').innerHTML = '';
+  }
 }
 
 function appendMessage(msg) {
@@ -468,12 +566,13 @@ function appendMessage(msg) {
     list.appendChild(sep);
   }
   const mine = msg.from === state.me.id;
+  const author = mine ? state.me : getUser(msg.from);
   const row = document.createElement('div');
   row.className = 'msg' + (mine ? ' mine' : '');
 
   const av = document.createElement('div');
   av.className = 'avatar';
-  setAvatar(av, mine ? state.me : state.other);
+  setAvatar(av, author);
   row.appendChild(av);
 
   const bubble = document.createElement('div');
@@ -491,7 +590,7 @@ function appendMessage(msg) {
   }
   const time = document.createElement('span');
   time.className = 'time';
-  time.textContent = fmtTime(msg.ts);
+  time.textContent = (mine ? '' : author.name + ' · ') + fmtTime(msg.ts);
   bubble.appendChild(time);
   row.appendChild(bubble);
   list.appendChild(row);
@@ -507,17 +606,17 @@ $('msgInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendTe
 let typingThrottle = 0;
 $('msgInput').addEventListener('input', () => {
   const now = Date.now();
-  if (now - typingThrottle > 1500) {
+  if (now - typingThrottle > 1500 && state.currentChannelId) {
     typingThrottle = now;
-    state.socket && state.socket.emit('typing');
+    state.socket && state.socket.emit('typing', { channel: state.currentChannelId });
   }
 });
 
 function sendText() {
   const input = $('msgInput');
   const text = input.value.trim();
-  if (!text) return;
-  state.socket.emit('chat', { type: 'text', text });
+  if (!text || !state.currentChannelId) return;
+  state.socket.emit('chat', { channel: state.currentChannelId, type: 'text', text });
   input.value = '';
   input.focus();
 }
@@ -526,12 +625,12 @@ $('btnPhoto').addEventListener('click', () => $('photoInput').click());
 $('photoInput').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
-  if (!file) return;
+  if (!file || !state.currentChannelId) return;
   toast('Enviando foto…');
   try {
     const dataUrl = await compressImage(file);
     const { url } = await api('/api/upload', { body: { dataUrl } });
-    state.socket.emit('chat', { type: 'image', url });
+    state.socket.emit('chat', { channel: state.currentChannelId, type: 'image', url });
   } catch (err) {
     toast('No se pudo enviar la foto 😕');
   }
@@ -544,207 +643,566 @@ function openImage(url) {
 $('imageViewerClose').addEventListener('click', () => $('imageViewer').classList.add('hidden'));
 $('imageViewer').addEventListener('click', (e) => { if (e.target.id === 'imageViewer') $('imageViewer').classList.add('hidden'); });
 
-/* ================= Sala de voz ================= */
+/* ================= Pestaña Servers ================= */
 
-function renderVoiceMembers() {
-  const wrap = $('voiceMembersList');
+function renderMyServers() {
+  const wrap = $('myServers');
   wrap.innerHTML = '';
-  if (state.voiceMembers.length === 0) {
-    wrap.innerHTML = '<span class="voice-empty">La sala está vacía</span>';
+  if (state.servers.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'voice-room-desc';
+    p.style.padding = '10px';
+    p.textContent = 'Todavía no estás en ningún server. Crea uno o busca arriba ⬆️';
+    wrap.appendChild(p);
     return;
   }
-  for (const m of state.voiceMembers) {
-    const el = document.createElement('div');
-    el.className = 'voice-member';
-    const av = document.createElement('div');
-    av.className = 'avatar';
-    setAvatar(av, m);
-    el.appendChild(av);
-    const name = document.createElement('span');
-    name.textContent = m.id === state.me.id ? 'Tú' : m.name;
-    el.appendChild(name);
-    wrap.appendChild(el);
+  for (const srv of state.servers) {
+    wrap.appendChild(serverCard(srv));
   }
 }
 
-$('btnJoinVoice').addEventListener('click', () => joinVoice(false));
-$('voiceBannerJoin').addEventListener('click', () => joinVoice(false));
-$('btnLeaveVoice').addEventListener('click', leaveVoice);
+function serverCard(srv) {
+  const card = document.createElement('div');
+  card.className = 'server-card' + (state.openServerId === srv.id ? ' open' : '');
 
-async function joinVoice(withVideo) {
-  if (state.inVoice) { switchView('voice'); return; }
+  const head = document.createElement('button');
+  head.className = 'server-head';
+  const icon = document.createElement('div');
+  icon.className = 'avatar';
+  setAvatar(icon, { id: srv.id, name: srv.name, avatar: srv.icon });
+  head.appendChild(icon);
+  const title = document.createElement('div');
+  title.className = 'server-title';
+  title.innerHTML = `<div class="s-name"></div><div class="s-meta"></div>`;
+  title.querySelector('.s-name').textContent = (srv.hasPassword ? '🔒 ' : '') + srv.name;
+  title.querySelector('.s-meta').textContent = `${srv.members.length} miembro${srv.members.length === 1 ? '' : 's'}${srv.ownerId === state.me.id ? ' · tuyo' : ''}`;
+  head.appendChild(title);
+  const chev = document.createElement('span');
+  chev.className = 'server-chevron';
+  chev.textContent = '▶';
+  head.appendChild(chev);
+  head.addEventListener('click', () => {
+    state.openServerId = state.openServerId === srv.id ? null : srv.id;
+    renderMyServers();
+  });
+  card.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'server-channels';
+  for (const ch of srv.channels) {
+    const item = document.createElement('button');
+    item.className = 'channel-item' + (ch.id === state.currentChannelId ? ' current' : '');
+    if (ch.type === 'text') {
+      item.textContent = '# ' + ch.name;
+      item.addEventListener('click', () => {
+        setCurrentChannel(ch.id);
+        switchView('chat');
+      });
+    } else {
+      item.textContent = '🔊 ' + ch.name;
+      const members = state.voiceStates[ch.id] || [];
+      if (members.length) {
+        const mm = document.createElement('span');
+        mm.className = 'ch-members';
+        for (const m of members.slice(0, 4)) {
+          const a = document.createElement('div');
+          a.className = 'avatar';
+          setAvatar(a, m);
+          mm.appendChild(a);
+        }
+        item.appendChild(mm);
+      }
+      item.addEventListener('click', () => joinVoice(ch.id));
+    }
+    body.appendChild(item);
+  }
+  if (srv.ownerId === state.me.id) {
+    const add = document.createElement('button');
+    add.className = 'channel-item add';
+    add.textContent = '＋ Crear canal';
+    add.addEventListener('click', () => openCreateChannel(srv.id));
+    body.appendChild(add);
+  }
+  const actions = document.createElement('div');
+  actions.className = 'server-actions';
+  const leave = document.createElement('button');
+  leave.className = 'btn-ghost';
+  leave.textContent = 'Salir del server';
+  leave.addEventListener('click', async () => {
+    if (!confirm(`¿Salir de "${srv.name}"?${srv.members.length === 1 ? ' Eres el último: el server se borrará.' : ''}`)) return;
+    try {
+      await api(`/api/servers/${srv.id}/leave`, { body: {} });
+      await loadServers();
+      if (!findMyChannel(state.currentChannelId)) pickInitialChannel();
+      renderAll();
+      if (state.currentChannelId) loadMessages(state.currentChannelId);
+    } catch (e) { toast(e.message); }
+  });
+  actions.appendChild(leave);
+  body.appendChild(actions);
+  card.appendChild(body);
+  return card;
+}
+
+/* ---- Buscador de servers ---- */
+
+let searchTimer = null;
+$('serverSearch').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(doSearch, 300);
+});
+
+async function doSearch() {
+  const q = $('serverSearch').value.trim();
+  const box = $('searchResults');
+  if (!q) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
   try {
-    state.micStream = await navigator.mediaDevices.getUserMedia({
+    const { servers } = await api('/api/servers?q=' + encodeURIComponent(q));
+    box.innerHTML = '';
+    box.classList.remove('hidden');
+    if (servers.length === 0) {
+      const p = document.createElement('p');
+      p.className = 'voice-room-desc';
+      p.style.padding = '8px';
+      p.textContent = `No hay ningún server que se llame "${q}". ¡Créalo tú!`;
+      box.appendChild(p);
+      return;
+    }
+    for (const srv of servers) {
+      const card = document.createElement('div');
+      card.className = 'server-card';
+      const head = document.createElement('div');
+      head.className = 'server-head';
+      const icon = document.createElement('div');
+      icon.className = 'avatar';
+      setAvatar(icon, { id: srv.id, name: srv.name, avatar: srv.icon });
+      head.appendChild(icon);
+      const title = document.createElement('div');
+      title.className = 'server-title';
+      title.innerHTML = `<div class="s-name"></div><div class="s-meta"></div>`;
+      title.querySelector('.s-name').textContent = (srv.hasPassword ? '🔒 ' : '') + srv.name;
+      title.querySelector('.s-meta').textContent = `${srv.memberCount} miembro${srv.memberCount === 1 ? '' : 's'}`;
+      head.appendChild(title);
+      const btn = document.createElement('button');
+      btn.className = 'server-join-btn';
+      if (srv.isMember) {
+        btn.textContent = 'Dentro ✓';
+        btn.style.background = 'var(--bg3)';
+      } else {
+        btn.textContent = 'Unirme';
+        btn.addEventListener('click', () => joinServer(srv));
+      }
+      head.appendChild(btn);
+      card.appendChild(head);
+      box.appendChild(card);
+    }
+  } catch (_) {}
+}
+
+async function joinServer(srv, password) {
+  try {
+    const { server } = await api(`/api/servers/${srv.id}/join`, { body: { password } });
+    $('joinPassOverlay').classList.add('hidden');
+    await loadServers();
+    const general = server.channels.find((c) => c.type === 'text');
+    if (general) setCurrentChannel(general.id);
+    renderAll();
+    switchView('chat');
+    toast(`¡Bienvenido a ${server.name}! 🎉`);
+    $('serverSearch').value = '';
+    $('searchResults').classList.add('hidden');
+  } catch (e) {
+    if (e.code === 'password') {
+      // pide la contraseña del server
+      $('joinPassTitle').textContent = '🔒 ' + srv.name;
+      $('joinPassError').textContent = password ? 'Contraseña incorrecta.' : '';
+      $('joinPassInput').value = '';
+      $('joinPassOverlay').classList.remove('hidden');
+      $('btnDoJoinPass').onclick = () => joinServer(srv, $('joinPassInput').value);
+    } else {
+      toast(e.message);
+    }
+  }
+}
+$('btnCloseJoinPass').addEventListener('click', () => $('joinPassOverlay').classList.add('hidden'));
+
+/* ---- Crear server ---- */
+
+let newServerIconData = null;
+$('btnCreateServer').addEventListener('click', () => {
+  newServerIconData = null;
+  $('newServerIcon').innerHTML = '🎮';
+  $('newServerName').value = '';
+  $('newServerPass').value = '';
+  $('createServerError').textContent = '';
+  $('createServerOverlay').classList.remove('hidden');
+});
+$('btnCloseCreateServer').addEventListener('click', () => $('createServerOverlay').classList.add('hidden'));
+$('btnServerIcon').addEventListener('click', () => $('serverIconInput').click());
+$('serverIconInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    newServerIconData = await compressImage(file, 256, 0.9);
+    $('newServerIcon').innerHTML = `<img src="${newServerIconData}" alt="" />`;
+  } catch (_) {}
+});
+$('btnDoCreateServer').addEventListener('click', async () => {
+  try {
+    const { server } = await api('/api/servers', {
+      body: {
+        name: $('newServerName').value,
+        password: $('newServerPass').value,
+        iconDataUrl: newServerIconData
+      }
+    });
+    $('createServerOverlay').classList.add('hidden');
+    await loadServers();
+    const general = server.channels.find((c) => c.type === 'text');
+    if (general) setCurrentChannel(general.id);
+    renderAll();
+    switchView('chat');
+    toast(`Server "${server.name}" creado 🎉 Ya aparece en el buscador.`);
+  } catch (e) {
+    $('createServerError').textContent = e.message;
+  }
+});
+
+/* ---- Crear canal ---- */
+
+let newChannelType = 'text';
+let newChannelServerId = null;
+function openCreateChannel(serverId) {
+  newChannelServerId = serverId;
+  newChannelType = 'text';
+  $('chTypeText').classList.add('active');
+  $('chTypeVoice').classList.remove('active');
+  $('newChannelName').value = '';
+  $('createChannelError').textContent = '';
+  $('createChannelOverlay').classList.remove('hidden');
+}
+$('chTypeText').addEventListener('click', () => {
+  newChannelType = 'text';
+  $('chTypeText').classList.add('active');
+  $('chTypeVoice').classList.remove('active');
+});
+$('chTypeVoice').addEventListener('click', () => {
+  newChannelType = 'voice';
+  $('chTypeVoice').classList.add('active');
+  $('chTypeText').classList.remove('active');
+});
+$('btnCloseCreateChannel').addEventListener('click', () => $('createChannelOverlay').classList.add('hidden'));
+$('btnDoCreateChannel').addEventListener('click', async () => {
+  try {
+    await api(`/api/servers/${newChannelServerId}/channels`, {
+      body: { name: $('newChannelName').value, type: newChannelType }
+    });
+    $('createChannelOverlay').classList.add('hidden');
+    await loadServers();
+    renderAll();
+  } catch (e) {
+    $('createChannelError').textContent = e.message;
+  }
+});
+
+/* ================= Voz: lobby y banner ================= */
+
+function renderVoiceLobby() {
+  const list = $('voiceChannelList');
+  list.innerHTML = '';
+  let any = false;
+  for (const srv of state.servers) {
+    for (const ch of srv.channels) {
+      if (ch.type !== 'voice') continue;
+      any = true;
+      const item = document.createElement('button');
+      item.className = 'voice-channel-item';
+      const name = document.createElement('span');
+      name.className = 'vc-name';
+      name.textContent = `🔊 ${ch.name} · ${srv.name}`;
+      item.appendChild(name);
+      const members = state.voiceStates[ch.id] || [];
+      const mm = document.createElement('span');
+      mm.className = 'vc-members';
+      for (const m of members.slice(0, 5)) {
+        const a = document.createElement('div');
+        a.className = 'avatar';
+        setAvatar(a, m);
+        mm.appendChild(a);
+      }
+      item.appendChild(mm);
+      item.addEventListener('click', () => joinVoice(ch.id));
+      list.appendChild(item);
+    }
+  }
+  $('voiceLobbyHint').textContent = any
+    ? 'Toca un canal para entrar. Entra y sal cuando quieras: los demás se quedan.'
+    : 'Únete a un server (pestaña Servers) para tener canales de voz.';
+}
+
+function renderVoiceBanner() {
+  // aviso en el chat cuando hay gente en algún canal de voz de mis servers
+  let found = null;
+  for (const srv of state.servers) {
+    for (const ch of srv.channels) {
+      if (ch.type !== 'voice') continue;
+      const members = (state.voiceStates[ch.id] || []).filter((m) => m.id !== state.me.id);
+      if (members.length) { found = { srv, ch, members }; break; }
+    }
+    if (found) break;
+  }
+  if (found && !state.voice.channel) {
+    $('voiceBanner').classList.remove('hidden');
+    const names = found.members.map((m) => m.name).join(', ');
+    $('voiceBannerText').textContent = `🎧 ${names} en ${found.ch.name}`;
+    $('voiceBannerJoin').onclick = () => joinVoice(found.ch.id);
+  } else {
+    $('voiceBanner').classList.add('hidden');
+  }
+  $('voiceDot').classList.toggle('hidden', !found && !state.voice.channel);
+}
+
+/* ================= Voz: sala grupal (mesh WebRTC) ================= */
+
+$('btnLeaveVoice').addEventListener('click', () => leaveVoice());
+
+async function joinVoice(channelId, withVideo) {
+  if (state.voice.channel === channelId) { switchView('voice'); return; }
+  if (state.voice.channel) leaveVoice(true);
+  try {
+    state.voice.micStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     });
   } catch (e) {
     toast('Necesito permiso del micrófono 🎙️');
     return;
   }
-  state.inVoice = true;
-  state.micOn = true;
-  state.wantVideoOnJoin = !!withVideo;
+  state.voice.channel = channelId;
+  state.voice.micOn = true;
   $('btnMic').classList.add('active');
   $('btnMic').classList.remove('off');
   switchView('voice');
   $('voiceLobby').classList.add('hidden');
   $('voiceRoom').classList.remove('hidden');
-  state.socket.emit('voice-join');
-  updateRemotePlaceholder();
+  setAvatar($('aloneAvatar'), state.me);
+  state.socket.emit('voice-join', { channel: channelId });
   requestWakeLock();
-
-  // Si el otro ya está dentro, conecta ya
-  if (state.voiceMembers.some((m) => m.id !== state.me.id)) startPeer();
+  syncPeers();
   if (withVideo) toggleCam(true);
+  renderVoiceBanner();
 }
 
-function leaveVoice() {
+function leaveVoice(silent) {
   state.socket.emit('voice-leave');
-  state.inVoice = false;
-  closePeer();
+  state.voice.channel = null;
+  for (const peerId of [...state.voice.peers.keys()]) removePeer(peerId);
   stopLocalMedia();
   $('voiceRoom').classList.add('hidden');
   $('voiceLobby').classList.remove('hidden');
   releaseWakeLock();
-  switchView('chat');
+  if (!silent) switchView('chat');
+  renderVoiceBanner();
 }
 
 function stopLocalMedia() {
-  if (state.micStream) { state.micStream.getTracks().forEach((t) => t.stop()); state.micStream = null; }
+  if (state.voice.micStream) { state.voice.micStream.getTracks().forEach((t) => t.stop()); state.voice.micStream = null; }
   stopCam();
   stopScreen();
   $('localPip').classList.remove('visible');
 }
 
-function updateRemotePlaceholder() {
-  const otherIn = state.voiceMembers.some((m) => m.id !== state.me.id);
-  $('remoteLabel').textContent = otherIn
-    ? (state.other ? state.other.name : '')
-    : `Esperando a que ${state.other ? state.other.name : 'tu persona'} entre…`;
-  if (!otherIn) {
-    $('remoteVideo').classList.add('novideo');
-    $('remotePlaceholder').classList.remove('hidden');
-    $('remoteMicState').classList.add('hidden');
+// Crea/cierra conexiones según quién está en el canal.
+// Regla: yo solo inicio la conexión con quienes YA estaban cuando entré;
+// los que llegan después me mandan su oferta y la creo al recibirla.
+// Así nunca chocan dos ofertas a la vez.
+function syncPeers() {
+  const members = state.voiceStates[state.voice.channel] || [];
+  const ids = members.map((m) => m.id);
+  const myIdx = ids.indexOf(state.me.id);
+  for (const peerId of [...state.voice.peers.keys()]) {
+    if (!ids.includes(peerId)) removePeer(peerId);
   }
+  members.forEach((m, idx) => {
+    if (m.id === state.me.id) return;
+    if (myIdx !== -1 && idx < myIdx && !state.voice.peers.has(m.id)) createPeer(m);
+  });
+  updateTilesLayout();
 }
 
-/* ---- WebRTC (negociación "perfecta" para que nunca choque) ---- */
-
-function startPeer() {
-  if (state.pc) return;
-  const otherId = state.voiceMembers.find((m) => m.id !== state.me.id)?.id || (state.other && state.other.id);
-  state.polite = String(state.me.id) < String(otherId); // determinista: uno cede y el otro no
-  state.makingOffer = false;
-  state.ignoreOffer = false;
-
+function createPeer(member) {
   const pc = new RTCPeerConnection({ iceServers: state.config.iceServers });
-  state.pc = pc;
+  const peer = {
+    id: member.id,
+    pc,
+    polite: String(state.me.id) < String(member.id),
+    makingOffer: false,
+    ignoreOffer: false,
+    videoTx: null,
+    audioEl: null,
+    createdAt: Date.now(),
+    watchdog: null,
+    tile: makeTile(member)
+  };
+  state.voice.peers.set(member.id, peer);
 
-  // Transceivers fijos: audio (mi micro) + video (cámara O pantalla, se cambia sin renegociar)
-  state.audioTx = pc.addTransceiver(state.micStream.getAudioTracks()[0], { direction: 'sendrecv' });
-  state.videoTx = pc.addTransceiver('video', { direction: 'sendrecv' });
-  const sendTrack = state.screenTrack || state.camTrack;
-  if (sendTrack) state.videoTx.sender.replaceTrack(sendTrack);
+  // Vigilante: si en ~9s la conexión no arrancó, se recrea sola
+  peer.watchdog = setInterval(() => {
+    const st = peer.pc.connectionState;
+    if (st === 'connected') { clearInterval(peer.watchdog); peer.watchdog = null; return; }
+    if ((st === 'new' || st === 'failed') && Date.now() - peer.createdAt > 9000) {
+      const m = (state.voiceStates[state.voice.channel] || []).find((x) => x.id === peer.id);
+      removePeer(peer.id);
+      // reintenta el lado de ID menor; el otro la recreará al recibir la oferta
+      if (m && String(state.me.id) < String(peer.id)) createPeer(m);
+      updateTilesLayout();
+    }
+  }, 3000);
+
+  // audio (mi micro) + video (cámara o pantalla, se cambia sin renegociar)
+  pc.addTransceiver(state.voice.micStream.getAudioTracks()[0], { direction: 'sendrecv' });
+  peer.videoTx = pc.addTransceiver('video', { direction: 'sendrecv' });
+  const sendTrack = state.voice.screenTrack || state.voice.camTrack;
+  if (sendTrack) peer.videoTx.sender.replaceTrack(sendTrack);
 
   pc.onnegotiationneeded = async () => {
     try {
-      state.makingOffer = true;
+      peer.makingOffer = true;
       await pc.setLocalDescription();
-      state.socket.emit('rtc', { description: pc.localDescription });
-    } catch (e) {
-      console.error(e);
-    } finally {
-      state.makingOffer = false;
-    }
+      sendRtc(peer, { description: pc.localDescription });
+    } catch (e) { console.error(e); }
+    finally { peer.makingOffer = false; }
   };
-
-  pc.onicecandidate = ({ candidate }) => state.socket.emit('rtc', { candidate });
-
+  pc.onicecandidate = ({ candidate }) => sendRtc(peer, { candidate });
   pc.ontrack = ({ track }) => {
     if (track.kind === 'audio') {
-      $('remoteAudio').srcObject = new MediaStream([track]);
-      $('remoteAudio').play().catch(() => {});
+      peer.audioEl = document.createElement('audio');
+      peer.audioEl.autoplay = true;
+      peer.audioEl.srcObject = new MediaStream([track]);
+      $('remoteAudios').appendChild(peer.audioEl);
+      peer.audioEl.play().catch(() => {});
     } else {
-      $('remoteVideo').srcObject = new MediaStream([track]);
-      const show = (on) => {
-        $('remoteVideo').classList.toggle('novideo', !on);
-        $('remotePlaceholder').classList.toggle('hidden', on);
-      };
+      peer.tile.video.srcObject = new MediaStream([track]);
+      const show = (on) => peer.tile.root.classList.toggle('hasvideo', on);
       track.onunmute = () => show(true);
       track.onmute = () => show(false);
       show(!track.muted);
     }
   };
-
   pc.onconnectionstatechange = () => {
     if (pc.connectionState === 'failed') {
-      // Reintenta la conexión desde cero
-      closePeer();
-      if (state.inVoice && state.voiceMembers.some((m) => m.id !== state.me.id)) startPeer();
+      removePeer(member.id);
+      const still = (state.voiceStates[state.voice.channel] || []).some((m) => m.id === member.id);
+      if (state.voice.channel && still) createPeer(member);
+      updateTilesLayout();
     }
   };
-
   sendVoiceStatus();
+  return peer;
 }
 
-async function onRtcMessage({ description, candidate }) {
-  const pc = state.pc;
-  if (!pc) return;
+function sendRtc(peer, payload) {
+  state.socket.emit('rtc', { channel: state.voice.channel, to: peer.id, payload });
+}
+
+async function handleRtc(peer, { description, candidate }) {
+  const pc = peer.pc;
   try {
     if (description) {
-      const collision = description.type === 'offer' && (state.makingOffer || pc.signalingState !== 'stable');
-      state.ignoreOffer = !state.polite && collision;
-      if (state.ignoreOffer) return;
+      const collision = description.type === 'offer' && (peer.makingOffer || pc.signalingState !== 'stable');
+      peer.ignoreOffer = !peer.polite && collision;
+      if (peer.ignoreOffer) return;
       await pc.setRemoteDescription(description);
       if (description.type === 'offer') {
         await pc.setLocalDescription();
-        state.socket.emit('rtc', { description: pc.localDescription });
+        sendRtc(peer, { description: pc.localDescription });
       }
     } else if (candidate) {
       try { await pc.addIceCandidate(candidate); }
-      catch (e) { if (!state.ignoreOffer) throw e; }
+      catch (e) { if (!peer.ignoreOffer) throw e; }
     }
-  } catch (e) {
-    console.error('rtc', e);
-  }
+  } catch (e) { console.error('rtc', e); }
 }
 
-function closePeer() {
-  if (state.pc) {
-    state.pc.onnegotiationneeded = null;
-    state.pc.onicecandidate = null;
-    state.pc.ontrack = null;
-    state.pc.close();
-    state.pc = null;
-  }
-  state.audioTx = null;
-  state.videoTx = null;
-  $('remoteAudio').srcObject = null;
-  $('remoteVideo').srcObject = null;
-  $('remoteVideo').classList.add('novideo');
-  $('remotePlaceholder').classList.remove('hidden');
+function removePeer(peerId) {
+  const peer = state.voice.peers.get(peerId);
+  if (!peer) return;
+  if (peer.watchdog) clearInterval(peer.watchdog);
+  peer.pc.onnegotiationneeded = null;
+  peer.pc.onicecandidate = null;
+  peer.pc.ontrack = null;
+  peer.pc.close();
+  if (peer.audioEl) peer.audioEl.remove();
+  if (peer.tile) peer.tile.root.remove();
+  state.voice.peers.delete(peerId);
+  updateTilesLayout();
+}
+
+function makeTile(member) {
+  const root = document.createElement('div');
+  root.className = 'tile';
+  const video = document.createElement('video');
+  video.autoplay = true;
+  video.playsInline = true;
+  video.setAttribute('playsinline', '');
+  root.appendChild(video);
+  const wrap = document.createElement('div');
+  wrap.className = 'tile-avatar-wrap';
+  const av = document.createElement('div');
+  av.className = 'avatar big-avatar';
+  setAvatar(av, member);
+  wrap.appendChild(av);
+  root.appendChild(wrap);
+  const name = document.createElement('div');
+  name.className = 'tile-name';
+  name.textContent = member.name;
+  root.appendChild(name);
+  const mic = document.createElement('div');
+  mic.className = 'tile-mic';
+  mic.textContent = '🔇';
+  root.appendChild(mic);
+  $('tiles').appendChild(root);
+  return { root, video };
+}
+
+function updateTilesLayout() {
+  const n = state.voice.peers.size;
+  const tiles = $('tiles');
+  tiles.classList.remove('n2', 'n3', 'n4');
+  if (n === 2) tiles.classList.add('n2');
+  else if (n >= 3) tiles.classList.add('n4');
+  $('voiceAlone').classList.toggle('hidden', n > 0);
 }
 
 function sendVoiceStatus() {
-  if (!state.inVoice) return;
+  if (!state.voice.channel) return;
   state.socket.emit('voice-status', {
-    mic: state.micOn,
-    cam: !!state.camTrack,
-    screen: !!state.screenTrack
+    channel: state.voice.channel,
+    status: { mic: state.voice.micOn, cam: !!state.voice.camTrack, screen: !!state.voice.screenTrack }
   });
 }
 
-/* ---- Controles: micro, cámara, pantalla ---- */
+/* ---- Controles ---- */
 
 $('btnMic').addEventListener('click', () => {
-  state.micOn = !state.micOn;
-  if (state.micStream) state.micStream.getAudioTracks().forEach((t) => (t.enabled = state.micOn));
-  $('btnMic').classList.toggle('active', state.micOn);
-  $('btnMic').classList.toggle('off', !state.micOn);
+  state.voice.micOn = !state.voice.micOn;
+  if (state.voice.micStream) state.voice.micStream.getAudioTracks().forEach((t) => (t.enabled = state.voice.micOn));
+  $('btnMic').classList.toggle('active', state.voice.micOn);
+  $('btnMic').classList.toggle('off', !state.voice.micOn);
   sendVoiceStatus();
 });
 
-$('btnCam').addEventListener('click', () => toggleCam(!state.camTrack));
+$('btnCam').addEventListener('click', () => toggleCam(!state.voice.camTrack));
+
+function replaceVideoEverywhere(track) {
+  for (const peer of state.voice.peers.values()) {
+    if (peer.videoTx) peer.videoTx.sender.replaceTrack(track);
+  }
+}
 
 async function toggleCam(on) {
   if (on) {
@@ -753,51 +1211,51 @@ async function toggleCam(on) {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }
       });
-      state.camTrack = stream.getVideoTracks()[0];
+      state.voice.camTrack = stream.getVideoTracks()[0];
     } catch (e) {
       toast('Necesito permiso de la cámara 📹');
       return;
     }
-    showLocalPreview(state.camTrack, false);
-    if (state.videoTx) state.videoTx.sender.replaceTrack(state.camTrack);
+    showLocalPreview(state.voice.camTrack, false);
+    replaceVideoEverywhere(state.voice.camTrack);
   } else {
     stopCam();
-    if (state.videoTx) state.videoTx.sender.replaceTrack(null);
+    replaceVideoEverywhere(null);
   }
-  $('btnCam').classList.toggle('active', !!state.camTrack);
+  $('btnCam').classList.toggle('active', !!state.voice.camTrack);
   sendVoiceStatus();
 }
 
 function stopCam() {
-  if (state.camTrack) { state.camTrack.stop(); state.camTrack = null; }
-  if (!state.screenTrack) $('localPip').classList.remove('visible');
+  if (state.voice.camTrack) { state.voice.camTrack.stop(); state.voice.camTrack = null; }
+  if (!state.voice.screenTrack) $('localPip').classList.remove('visible');
   $('btnCam').classList.remove('active');
 }
 
 $('btnScreen').addEventListener('click', async () => {
-  if (state.screenTrack) { stopScreenAndRestore(); return; }
+  if (state.voice.screenTrack) { stopScreenAndRestore(); return; }
   try {
     const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-    state.screenTrack = stream.getVideoTracks()[0];
+    state.voice.screenTrack = stream.getVideoTracks()[0];
   } catch (e) {
-    return; // canceló el selector
+    return; // canceló
   }
   stopCam();
-  showLocalPreview(state.screenTrack, true);
-  if (state.videoTx) state.videoTx.sender.replaceTrack(state.screenTrack);
+  showLocalPreview(state.voice.screenTrack, true);
+  replaceVideoEverywhere(state.voice.screenTrack);
   $('btnScreen').classList.add('active');
-  state.screenTrack.onended = () => stopScreenAndRestore(); // botón "dejar de compartir" del sistema
+  state.voice.screenTrack.onended = () => stopScreenAndRestore();
   sendVoiceStatus();
 });
 
 function stopScreen() {
-  if (state.screenTrack) { state.screenTrack.onended = null; state.screenTrack.stop(); state.screenTrack = null; }
+  if (state.voice.screenTrack) { state.voice.screenTrack.onended = null; state.voice.screenTrack.stop(); state.voice.screenTrack = null; }
   $('btnScreen').classList.remove('active');
 }
 
 function stopScreenAndRestore() {
   stopScreen();
-  if (state.videoTx) state.videoTx.sender.replaceTrack(null);
+  replaceVideoEverywhere(null);
   $('localPip').classList.remove('visible');
   sendVoiceStatus();
 }
@@ -809,7 +1267,6 @@ function showLocalPreview(track, isScreen) {
   $('localPip').classList.add('visible');
 }
 
-/* ---- Mantener la pantalla despierta durante la llamada ---- */
 async function requestWakeLock() {
   try { state.wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}
 }
@@ -817,23 +1274,25 @@ function releaseWakeLock() {
   if (state.wakeLock) { state.wakeLock.release().catch(() => {}); state.wakeLock = null; }
 }
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && state.inVoice) requestWakeLock();
+  if (!document.hidden && state.voice.channel) requestWakeLock();
 });
 
-/* ================= Llamadas estilo WhatsApp ================= */
+/* ================= Llamadas directas ================= */
 
 $('btnAudioCall').addEventListener('click', () => startCall(false));
 $('btnVideoCall').addEventListener('click', () => startCall(true));
 
 function startCall(video) {
-  if (!state.other) { toast('Todavía no hay nadie más registrado'); return; }
-  if (state.inVoice) { toast('Ya estás en la sala de voz'); return; }
+  const others = state.lastOnline.filter((id) => id !== state.me.id);
+  if (others.length === 0) { toast('No hay nadie conectado ahora mismo'); return; }
+  if (state.voice.channel) { toast('Ya estás en un canal de voz'); return; }
   state.calling = video ? 'video' : 'audio';
-  $('outgoingName').textContent = state.other.name;
+  const first = getUser(others[0]);
+  $('outgoingName').textContent = others.length === 1 ? first.name : 'Llamando a todos…';
+  setAvatar($('outgoingAvatar'), others.length === 1 ? first : state.me);
   $('outgoingCall').classList.remove('hidden');
   state.socket.emit('call-start', { video });
   startRingtone(false);
-  // Si no contesta en 45s, corta solo
   clearTimeout(startCall._timeout);
   startCall._timeout = setTimeout(() => {
     if (state.calling) {
@@ -841,7 +1300,7 @@ function startCall(video) {
       state.calling = false;
       stopRingtone();
       $('outgoingCall').classList.add('hidden');
-      toast('No contestó 😔');
+      toast('No contestaron 😔');
     }
   }, 45000);
 }
@@ -860,7 +1319,7 @@ $('btnAcceptCall').addEventListener('click', async () => {
   $('incomingCall').classList.add('hidden');
   if (!call) return;
   state.socket.emit('call-accept');
-  await joinVoice(call.video);
+  await joinVoice(CALL_CHANNEL, call.video);
 });
 
 $('btnRejectCall').addEventListener('click', () => {
@@ -886,9 +1345,10 @@ $('avatarInput').addEventListener('change', async (e) => {
   if (!file) return;
   try {
     const dataUrl = await compressImage(file, 256, 0.9);
-    localStorage.setItem('avatarCache', dataUrl); // por si el servidor gratis se reinicia
+    localStorage.setItem('avatarCache', dataUrl);
     const { me } = await api('/api/profile', { body: { avatarDataUrl: dataUrl } });
     state.me = me;
+    state.users.set(me.id, me);
     setAvatar($('myAvatar'), state.me);
     toast('Foto de perfil actualizada ✨');
   } catch (err) {
@@ -900,6 +1360,7 @@ $('btnSaveProfile').addEventListener('click', async () => {
   try {
     const { me } = await api('/api/profile', { body: { name: $('settingsName').value } });
     state.me = me;
+    state.users.set(me.id, me);
     const creds = JSON.parse(localStorage.getItem('creds') || 'null');
     if (creds) { creds.name = me.name; localStorage.setItem('creds', JSON.stringify(creds)); }
     $('settingsOverlay').classList.add('hidden');
@@ -917,5 +1378,5 @@ $('btnLogout').addEventListener('click', async () => {
 });
 
 /* ================= Arranque ================= */
-window.state = state; // útil para depurar desde la consola
+window.state = state; // útil para depurar
 boot();

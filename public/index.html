@@ -19,7 +19,7 @@
     <div class="auth-card">
       <div class="auth-logo">💜</div>
       <h1>Ale y Hugo</h1>
-      <p class="auth-sub">Solo para nosotros dos</p>
+      <p class="auth-sub">Nuestro Discord privado</p>
       <input id="authName" type="text" placeholder="Tu nombre" autocomplete="username" maxlength="30" />
       <div class="pass-wrap">
         <input id="authPass" type="password" placeholder="Contraseña" autocomplete="current-password" />
@@ -40,11 +40,11 @@
   <!-- ============ APP PRINCIPAL ============ -->
   <div id="appScreen" class="screen hidden">
     <header class="topbar">
-      <div class="peer-info" id="peerInfo">
-        <div class="avatar" id="peerAvatar"></div>
+      <div class="peer-info" id="channelInfo">
+        <div class="avatar" id="topbarIcon"></div>
         <div class="peer-text">
-          <div class="peer-name" id="peerName">Esperando...</div>
-          <div class="peer-status" id="peerStatus">desconectado</div>
+          <div class="peer-name" id="topbarTitle">Ale y Hugo</div>
+          <div class="peer-status" id="topbarSub"></div>
         </div>
       </div>
       <div class="topbar-actions">
@@ -54,15 +54,20 @@
       </div>
     </header>
 
-    <!-- ---- Vista: Chat ---- -->
+    <!-- ---- Vista: Chat (canal de texto actual) ---- -->
     <main id="viewChat" class="view">
+      <div id="noChannel" class="empty-state hidden">
+        <div class="empty-icon">🧭</div>
+        <p>Todavía no estás en ningún server.</p>
+        <button id="btnGoServers" class="btn-primary">Buscar o crear un server</button>
+      </div>
       <div id="voiceBanner" class="voice-banner hidden">
-        <span id="voiceBannerText">🎧 En la sala de voz</span>
+        <span id="voiceBannerText">🎧 Hay gente en la sala de voz</span>
         <button id="voiceBannerJoin" class="btn-small">Unirme</button>
       </div>
       <div id="messages" class="messages"></div>
       <div id="typingIndicator" class="typing hidden">escribiendo…</div>
-      <div class="input-bar">
+      <div class="input-bar" id="inputBar">
         <button id="btnPhoto" class="icon-btn" title="Enviar foto">📷</button>
         <input id="photoInput" type="file" accept="image/*" class="hidden" />
         <input id="msgInput" type="text" placeholder="Escribe un mensaje…" autocomplete="off" />
@@ -70,27 +75,23 @@
       </div>
     </main>
 
-    <!-- ---- Vista: Sala de voz ---- -->
+    <!-- ---- Vista: Voz ---- -->
     <main id="viewVoice" class="view hidden">
       <div id="voiceLobby" class="voice-lobby">
         <div class="voice-room-card">
           <div class="voice-room-icon">🎧</div>
-          <h2>Sala de voz</h2>
-          <p class="voice-room-desc">Entra y sal cuando quieras.<br/>El otro puede quedarse esperándote.</p>
-          <div id="voiceMembersList" class="voice-members"></div>
-          <button id="btnJoinVoice" class="btn-primary big">Entrar a la sala</button>
+          <h2 id="voiceLobbyTitle">Canales de voz</h2>
+          <div id="voiceChannelList" class="voice-channel-list"></div>
+          <p class="voice-room-desc" id="voiceLobbyHint">Entra y sal cuando quieras.<br/>Los demás pueden quedarse dentro.</p>
         </div>
       </div>
 
       <div id="voiceRoom" class="voice-room hidden">
         <div class="video-area" id="videoArea">
-          <div class="remote-wrap" id="remoteWrap">
-            <video id="remoteVideo" autoplay playsinline></video>
-            <div class="remote-placeholder" id="remotePlaceholder">
-              <div class="avatar big-avatar" id="remoteAvatar"></div>
-              <div id="remoteLabel" class="remote-label">Esperando a que entre…</div>
-              <div id="remoteMicState" class="mic-state hidden">🔇 micrófono silenciado</div>
-            </div>
+          <div id="tiles" class="tiles"></div>
+          <div id="voiceAlone" class="voice-alone hidden">
+            <div class="avatar big-avatar" id="aloneAvatar"></div>
+            <div class="remote-label">Esperando a que alguien entre…</div>
           </div>
           <div class="local-pip" id="localPip">
             <video id="localVideo" autoplay playsinline muted></video>
@@ -103,13 +104,27 @@
           <button id="btnLeaveVoice" class="ctrl-btn danger" title="Salir">📵</button>
         </div>
       </div>
-      <audio id="remoteAudio" autoplay></audio>
+      <div id="remoteAudios" class="hidden"></div>
+    </main>
+
+    <!-- ---- Vista: Servers ---- -->
+    <main id="viewServers" class="view hidden">
+      <div class="servers-wrap">
+        <div class="servers-search">
+          <input id="serverSearch" type="text" placeholder="🔍 Buscar servers…" autocomplete="off" />
+          <button id="btnCreateServer" class="btn-small">+ Crear</button>
+        </div>
+        <div id="searchResults" class="server-list hidden"></div>
+        <h3 class="servers-heading">Mis servers</h3>
+        <div id="myServers" class="server-list"></div>
+      </div>
     </main>
 
     <!-- ---- Navegación inferior ---- -->
     <nav class="bottomnav">
       <button id="navChat" class="nav-btn active">💬<span>Chat</span><b id="chatBadge" class="badge hidden"></b></button>
       <button id="navVoice" class="nav-btn">🎧<span>Voz</span><b id="voiceDot" class="dot hidden"></b></button>
+      <button id="navServers" class="nav-btn">🧭<span>Servers</span></button>
     </nav>
   </div>
 
@@ -128,7 +143,7 @@
 
   <div id="outgoingCall" class="overlay hidden">
     <div class="call-card">
-      <div class="avatar big-avatar ringing" id="outgoingAvatar"></div>
+      <div class="avatar big-avatar ringing" id="outgoingAvatar">💜</div>
       <h2 id="outgoingName">…</h2>
       <p>Llamando…</p>
       <div class="call-actions">
@@ -155,6 +170,54 @@
       <button id="btnSaveProfile" class="btn-primary">Guardar</button>
       <button id="btnLogout" class="btn-ghost">Cerrar sesión</button>
       <button id="btnCloseSettings" class="btn-ghost">Cerrar</button>
+    </div>
+  </div>
+
+  <!-- Crear server -->
+  <div id="createServerOverlay" class="overlay hidden">
+    <div class="settings-card">
+      <h2>Crear server</h2>
+      <div class="settings-avatar-wrap">
+        <div class="avatar big-avatar" id="newServerIcon">🎮</div>
+        <button id="btnServerIcon" class="btn-small">Foto del server</button>
+        <input id="serverIconInput" type="file" accept="image/*" class="hidden" />
+      </div>
+      <label>Nombre del server</label>
+      <input id="newServerName" type="text" maxlength="40" placeholder="huguito" />
+      <label>Contraseña (opcional — déjala vacía para que sea público)</label>
+      <input id="newServerPass" type="text" maxlength="40" placeholder="Sin contraseña = cualquiera entra" />
+      <button id="btnDoCreateServer" class="btn-primary">Crear</button>
+      <button id="btnCloseCreateServer" class="btn-ghost">Cancelar</button>
+      <p id="createServerError" class="auth-error"></p>
+    </div>
+  </div>
+
+  <!-- Unirse a server con contraseña -->
+  <div id="joinPassOverlay" class="overlay hidden">
+    <div class="settings-card">
+      <h2 id="joinPassTitle">Server privado</h2>
+      <label>Este server tiene contraseña</label>
+      <input id="joinPassInput" type="text" placeholder="Contraseña del server" />
+      <button id="btnDoJoinPass" class="btn-primary">Entrar</button>
+      <button id="btnCloseJoinPass" class="btn-ghost">Cancelar</button>
+      <p id="joinPassError" class="auth-error"></p>
+    </div>
+  </div>
+
+  <!-- Crear canal -->
+  <div id="createChannelOverlay" class="overlay hidden">
+    <div class="settings-card">
+      <h2>Nuevo canal</h2>
+      <label>Nombre</label>
+      <input id="newChannelName" type="text" maxlength="30" placeholder="memes" />
+      <label>Tipo</label>
+      <div class="channel-type-row">
+        <button id="chTypeText" class="btn-secondary active"># Texto</button>
+        <button id="chTypeVoice" class="btn-secondary">🔊 Voz</button>
+      </div>
+      <button id="btnDoCreateChannel" class="btn-primary">Crear canal</button>
+      <button id="btnCloseCreateChannel" class="btn-ghost">Cancelar</button>
+      <p id="createChannelError" class="auth-error"></p>
     </div>
   </div>
 

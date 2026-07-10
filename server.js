@@ -11,16 +11,35 @@ const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const MAX_USERS = parseInt(process.env.MAX_USERS || '12', 10);
 const INVITE_CODE = process.env.INVITE_CODE || '';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
-const MAX_MESSAGES = 500;
+const MAX_MESSAGES_PER_CHANNEL = 300;
+const CALL_CHANNEL = 'llamada'; // canal de voz especial para las llamadas directas
 
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-// ---------- Base de datos (archivo JSON, suficiente para 2 personas) ----------
+// ---------- Base de datos (archivo JSON) ----------
 const DB_FILE = path.join(DATA_DIR, 'db.json');
-let db = { users: [], tokens: {}, messages: [] };
+let db = { users: [], tokens: {}, servers: [], messages: {} };
 try {
   db = Object.assign(db, JSON.parse(fs.readFileSync(DB_FILE, 'utf8')));
-} catch (_) { /* primera vez, no existe */ }
+} catch (_) { /* primera vez */ }
+
+// Migración desde la versión anterior (un solo chat global)
+if (Array.isArray(db.messages)) {
+  const old = db.messages;
+  db.messages = {};
+  if (!Array.isArray(db.servers)) db.servers = [];
+  if (old.length && db.users.length) {
+    const ch = { id: newId(), name: 'general', type: 'text' };
+    db.servers.push({
+      id: newId(), name: 'Ale y Hugo 💜', icon: null, ownerId: db.users[0].id,
+      passHash: null, members: db.users.map((u) => u.id),
+      channels: [ch, { id: newId(), name: 'Sala de voz', type: 'voice' }]
+    });
+    db.messages[ch.id] = old.map((m) => ({ ...m, channel: ch.id }));
+  }
+}
+if (!Array.isArray(db.servers)) db.servers = [];
+if (typeof db.messages !== 'object' || db.messages === null) db.messages = {};
 
 let saveTimer = null;
 function save() {
@@ -33,20 +52,44 @@ function save() {
 }
 
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
-const newId = () => crypto.randomBytes(8).toString('hex');
+function newId() { return crypto.randomBytes(8).toString('hex'); }
 const newToken = () => crypto.randomBytes(24).toString('hex');
 
 function publicUser(u) {
   return { id: u.id, name: u.name, avatar: u.avatar || null };
 }
-
 function findUserByToken(token) {
   const userId = db.tokens[token];
   if (!userId) return null;
   return db.users.find((u) => u.id === userId) || null;
 }
+function findServer(id) {
+  return db.servers.find((s) => s.id === id) || null;
+}
+// Busca a qué server pertenece un canal
+function findChannel(channelId) {
+  for (const s of db.servers) {
+    const ch = s.channels.find((c) => c.id === channelId);
+    if (ch) return { server: s, channel: ch };
+  }
+  return null;
+}
+function serverSummary(s, userId) {
+  return {
+    id: s.id, name: s.name, icon: s.icon,
+    memberCount: s.members.length,
+    hasPassword: !!s.passHash,
+    isMember: s.members.includes(userId)
+  };
+}
+function serverFull(s) {
+  return {
+    id: s.id, name: s.name, icon: s.icon, ownerId: s.ownerId,
+    hasPassword: !!s.passHash, members: s.members, channels: s.channels
+  };
+}
 
-// ---------- Guardar imágenes que llegan como dataURL ----------
+// ---------- Guardar imágenes (dataURL) ----------
 const MIME_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
 function saveDataUrl(dataUrl) {
   const m = /^data:(image\/(?:jpeg|png|webp|gif));base64,(.+)$/.exec(dataUrl || '');
@@ -90,7 +133,7 @@ const DEFAULT_ICE = [
 ];
 let iceServers = DEFAULT_ICE;
 if (process.env.ICE_SERVERS) {
-  try { iceServers = JSON.parse(process.env.ICE_SERVERS); } catch (_) { /* usa los default */ }
+  try { iceServers = JSON.parse(process.env.ICE_SERVERS); } catch (_) { /* default */ }
 }
 
 app.get('/api/config', (req, res) => {
@@ -101,9 +144,7 @@ app.get('/api/config', (req, res) => {
   });
 });
 
-// Entrar o registrarse. mode: 'login' exige que la cuenta exista,
-// 'register' exige que no exista, y sin mode hace lo automático de antes
-// (lo usa la app para volver a entrar sola si el servidor se reinició).
+// ---------- Cuentas ----------
 app.post('/api/auth', (req, res) => {
   const name = String(req.body.name || '').trim().slice(0, 30);
   const password = String(req.body.password || '');
@@ -124,14 +165,14 @@ app.post('/api/auth', (req, res) => {
       return res.status(404).json({ error: 'no_existe', message: 'No hay ninguna cuenta con ese nombre. Usa "Registrarse".' });
     }
     if (db.users.length >= MAX_USERS) {
-      return res.status(403).json({ error: 'lleno', message: 'Este chat es privado, ya no hay lugares.' });
+      return res.status(403).json({ error: 'lleno', message: 'Ya no hay lugares para más cuentas.' });
     }
     if (INVITE_CODE && String(req.body.invite || '') !== INVITE_CODE) {
       return res.status(403).json({ error: 'invite', message: 'Código de invitación incorrecto.' });
     }
     user = { id: newId(), name, passHash: sha256(password), avatar: null };
     db.users.push(user);
-    io.emit('users-updated'); // avisa al otro que ya existes
+    io.emit('users-updated');
   }
   const token = newToken();
   db.tokens[token] = user.id;
@@ -139,7 +180,6 @@ app.post('/api/auth', (req, res) => {
   res.json({ token, me: publicUser(user) });
 });
 
-// Login con Google (opcional). Verifica el id_token contra Google.
 app.post('/api/google', async (req, res) => {
   if (!GOOGLE_CLIENT_ID) return res.status(400).json({ error: 'no_configurado' });
   try {
@@ -150,7 +190,7 @@ app.post('/api/google', async (req, res) => {
     let user = db.users.find((u) => u.googleId === info.sub);
     if (!user) {
       if (db.users.length >= MAX_USERS) {
-        return res.status(403).json({ error: 'lleno', message: 'Este chat es privado, ya no hay lugares.' });
+        return res.status(403).json({ error: 'lleno', message: 'Ya no hay lugares para más cuentas.' });
       }
       user = {
         id: newId(),
@@ -172,10 +212,11 @@ app.post('/api/google', async (req, res) => {
 });
 
 app.get('/api/me', auth, (req, res) => {
-  res.json({
-    me: publicUser(req.user),
-    others: db.users.filter((u) => u.id !== req.user.id).map(publicUser)
-  });
+  res.json({ me: publicUser(req.user) });
+});
+
+app.get('/api/users', auth, (req, res) => {
+  res.json({ users: db.users.map(publicUser) });
 });
 
 app.post('/api/profile', auth, (req, res) => {
@@ -189,8 +230,121 @@ app.post('/api/profile', auth, (req, res) => {
   res.json({ me: publicUser(req.user) });
 });
 
-app.get('/api/messages', auth, (req, res) => {
-  res.json({ messages: db.messages });
+app.post('/api/logout', auth, (req, res) => {
+  const token = (req.headers.authorization || '').replace('Bearer ', '');
+  delete db.tokens[token];
+  save();
+  res.json({ ok: true });
+});
+
+// ---------- Servers (como los de Discord) ----------
+function socketsOf(userId) {
+  const set = onlineSockets.get(userId);
+  return set ? [...set] : [];
+}
+function joinSocketsToRoom(userId, room) {
+  for (const s of socketsOf(userId)) s.join(room);
+}
+function leaveSocketsFromRoom(userId, room) {
+  for (const s of socketsOf(userId)) s.leave(room);
+}
+
+// Buscador: lista todos los servers (con ?q= filtra por nombre)
+app.get('/api/servers', auth, (req, res) => {
+  const q = String(req.query.q || '').trim().toLowerCase();
+  let list = db.servers;
+  if (q) list = list.filter((s) => s.name.toLowerCase().includes(q));
+  list = [...list].sort((a, b) => b.members.length - a.members.length);
+  res.json({ servers: list.map((s) => serverSummary(s, req.user.id)) });
+});
+
+// Mis servers, con canales completos
+app.get('/api/servers/mine', auth, (req, res) => {
+  const mine = db.servers.filter((s) => s.members.includes(req.user.id));
+  res.json({ servers: mine.map(serverFull) });
+});
+
+app.post('/api/servers', auth, (req, res) => {
+  const name = String(req.body.name || '').trim().slice(0, 40);
+  if (!name) return res.status(400).json({ error: 'nombre', message: 'Ponle un nombre al server.' });
+  if (db.servers.length >= 50) return res.status(403).json({ error: 'limite', message: 'Ya hay demasiados servers.' });
+  const password = String(req.body.password || '');
+  const s = {
+    id: newId(), name, icon: null, ownerId: req.user.id,
+    passHash: password ? sha256(password) : null,
+    members: [req.user.id],
+    channels: [
+      { id: newId(), name: 'general', type: 'text' },
+      { id: newId(), name: 'General', type: 'voice' }
+    ]
+  };
+  if (req.body.iconDataUrl) s.icon = saveDataUrl(req.body.iconDataUrl);
+  db.servers.push(s);
+  save();
+  joinSocketsToRoom(req.user.id, 'server:' + s.id);
+  io.emit('server-list-updated');
+  res.json({ server: serverFull(s) });
+});
+
+app.post('/api/servers/:id/join', auth, (req, res) => {
+  const s = findServer(req.params.id);
+  if (!s) return res.status(404).json({ error: 'no_existe', message: 'Ese server ya no existe.' });
+  if (s.members.includes(req.user.id)) return res.json({ server: serverFull(s) });
+  if (s.passHash && s.passHash !== sha256(String(req.body.password || ''))) {
+    return res.status(403).json({ error: 'password', message: 'Contraseña del server incorrecta.' });
+  }
+  s.members.push(req.user.id);
+  save();
+  joinSocketsToRoom(req.user.id, 'server:' + s.id);
+  io.emit('server-list-updated');
+  io.to('server:' + s.id).emit('server-changed', { serverId: s.id });
+  res.json({ server: serverFull(s) });
+});
+
+app.post('/api/servers/:id/leave', auth, (req, res) => {
+  const s = findServer(req.params.id);
+  if (!s) return res.status(404).json({ error: 'no_existe' });
+  s.members = s.members.filter((id) => id !== req.user.id);
+  // si estaba en un canal de voz de este server, sácalo
+  for (const ch of s.channels) {
+    if (ch.type === 'voice') removeFromVoice(req.user.id, ch.id);
+  }
+  leaveSocketsFromRoom(req.user.id, 'server:' + s.id);
+  if (s.members.length === 0) {
+    db.servers = db.servers.filter((x) => x.id !== s.id);
+    for (const ch of s.channels) delete db.messages[ch.id];
+  } else if (s.ownerId === req.user.id) {
+    s.ownerId = s.members[0]; // el server pasa al miembro más antiguo
+  }
+  save();
+  io.emit('server-list-updated');
+  io.to('server:' + s.id).emit('server-changed', { serverId: s.id });
+  res.json({ ok: true });
+});
+
+app.post('/api/servers/:id/channels', auth, (req, res) => {
+  const s = findServer(req.params.id);
+  if (!s) return res.status(404).json({ error: 'no_existe' });
+  if (s.ownerId !== req.user.id) {
+    return res.status(403).json({ error: 'no_dueno', message: 'Solo el dueño del server puede crear canales.' });
+  }
+  if (s.channels.length >= 20) return res.status(403).json({ error: 'limite', message: 'Máximo 20 canales por server.' });
+  const name = String(req.body.name || '').trim().slice(0, 30).replace(/\s+/g, '-').toLowerCase();
+  const type = req.body.type === 'voice' ? 'voice' : 'text';
+  if (!name) return res.status(400).json({ error: 'nombre', message: 'Ponle un nombre al canal.' });
+  const ch = { id: newId(), name, type };
+  s.channels.push(ch);
+  save();
+  io.to('server:' + s.id).emit('server-changed', { serverId: s.id });
+  res.json({ channel: ch });
+});
+
+app.get('/api/channels/:id/messages', auth, (req, res) => {
+  const found = findChannel(req.params.id);
+  if (!found || !found.server.members.includes(req.user.id)) {
+    return res.status(403).json({ error: 'sin_acceso' });
+  }
+  res.json({ messages: db.messages[req.params.id] || [] });
 });
 
 app.post('/api/upload', auth, (req, res) => {
@@ -199,40 +353,50 @@ app.post('/api/upload', auth, (req, res) => {
   res.json({ url });
 });
 
-app.post('/api/logout', auth, (req, res) => {
-  const token = (req.headers.authorization || '').replace('Bearer ', '');
-  delete db.tokens[token];
-  save();
-  res.json({ ok: true });
-});
-
-// ---------- Tiempo real: chat, presencia, sala de voz, llamadas ----------
+// ---------- Tiempo real ----------
 const onlineSockets = new Map(); // userId -> Set<socket>
-const voiceMembers = new Map(); // userId -> { socketId }
+const voice = new Map(); // channelId -> Map<userId, socketId>
 
 function presenceList() {
   return [...onlineSockets.keys()];
 }
-function voiceStateList() {
-  return [...voiceMembers.keys()].map((id) => {
+function voiceMembersOf(channelId) {
+  const room = voice.get(channelId);
+  if (!room) return [];
+  return [...room.keys()].map((id) => {
     const u = db.users.find((x) => x.id === id);
     return u ? publicUser(u) : { id, name: '?', avatar: null };
   });
 }
-function emitVoiceState() {
-  io.emit('voice-state', { members: voiceStateList() });
-}
-function socketsOf(userId) {
-  return onlineSockets.get(userId) || new Set();
-}
-function otherVoiceSocket(myUserId) {
-  for (const [uid, info] of voiceMembers) {
-    if (uid !== myUserId) {
-      const s = io.sockets.sockets.get(info.socketId);
-      if (s) return s;
-    }
+// A quién avisar de los cambios de un canal de voz
+function emitVoiceState(channelId) {
+  const payload = { channel: channelId, members: voiceMembersOf(channelId) };
+  if (channelId === CALL_CHANNEL) {
+    io.emit('voice-state', payload);
+  } else {
+    const found = findChannel(channelId);
+    if (found) io.to('server:' + found.server.id).emit('voice-state', payload);
   }
-  return null;
+}
+function removeFromVoice(userId, channelId, socketId) {
+  const room = voice.get(channelId);
+  if (!room || !room.has(userId)) return false;
+  if (socketId && room.get(userId) !== socketId) return false;
+  room.delete(userId);
+  if (room.size === 0) voice.delete(channelId);
+  emitVoiceState(channelId);
+  return true;
+}
+function leaveAllVoice(userId, socketId) {
+  for (const channelId of [...voice.keys()]) {
+    removeFromVoice(userId, channelId, socketId);
+  }
+}
+// ¿Puede este usuario usar este canal de voz?
+function canUseVoice(user, channelId) {
+  if (channelId === CALL_CHANNEL) return true;
+  const found = findChannel(channelId);
+  return !!(found && found.channel.type === 'voice' && found.server.members.includes(user.id));
 }
 
 io.use((socket, next) => {
@@ -246,62 +410,85 @@ io.on('connection', (socket) => {
   const user = socket.data.user;
   if (!onlineSockets.has(user.id)) onlineSockets.set(user.id, new Set());
   onlineSockets.get(user.id).add(socket);
+  for (const s of db.servers) {
+    if (s.members.includes(user.id)) socket.join('server:' + s.id);
+  }
   io.emit('presence', { online: presenceList() });
-  socket.emit('voice-state', { members: voiceStateList() });
+  // foto actual de todos los canales de voz que le tocan
+  const snapshot = [];
+  for (const channelId of voice.keys()) {
+    if (canUseVoice(user, channelId) || channelId === CALL_CHANNEL) {
+      snapshot.push({ channel: channelId, members: voiceMembersOf(channelId) });
+    }
+  }
+  socket.emit('voice-snapshot', { states: snapshot });
 
-  // ----- Chat -----
-  socket.on('chat', (data, ack) => {
-    const type = data && data.type === 'image' ? 'image' : 'text';
-    const msg = { id: newId(), from: user.id, type, ts: Date.now() };
+  // ----- Chat por canal -----
+  socket.on('chat', (data) => {
+    const channelId = String((data && data.channel) || '');
+    const found = findChannel(channelId);
+    if (!found || found.channel.type !== 'text' || !found.server.members.includes(user.id)) return;
+    const type = data.type === 'image' ? 'image' : 'text';
+    const msg = { id: newId(), channel: channelId, from: user.id, type, ts: Date.now() };
     if (type === 'text') {
-      msg.text = String((data && data.text) || '').slice(0, 4000);
+      msg.text = String(data.text || '').slice(0, 4000);
       if (!msg.text.trim()) return;
     } else {
-      msg.url = String((data && data.url) || '');
+      msg.url = String(data.url || '');
       if (!msg.url.startsWith('/uploads/')) return;
     }
-    db.messages.push(msg);
-    if (db.messages.length > MAX_MESSAGES) db.messages = db.messages.slice(-MAX_MESSAGES);
+    if (!db.messages[channelId]) db.messages[channelId] = [];
+    db.messages[channelId].push(msg);
+    if (db.messages[channelId].length > MAX_MESSAGES_PER_CHANNEL) {
+      db.messages[channelId] = db.messages[channelId].slice(-MAX_MESSAGES_PER_CHANNEL);
+    }
     save();
-    io.emit('chat', msg);
-    if (ack) ack({ ok: true });
+    io.to('server:' + found.server.id).emit('chat', msg);
   });
 
-  socket.on('typing', () => {
-    socket.broadcast.emit('typing', { userId: user.id });
+  socket.on('typing', (data) => {
+    const channelId = String((data && data.channel) || '');
+    const found = findChannel(channelId);
+    if (!found || !found.server.members.includes(user.id)) return;
+    socket.to('server:' + found.server.id).emit('typing', { userId: user.id, channel: channelId });
   });
 
-  // ----- Sala de voz: entrar / salir / volver a entrar -----
-  socket.on('voice-join', () => {
-    voiceMembers.set(user.id, { socketId: socket.id });
-    emitVoiceState();
+  // ----- Voz (grupal, por canal) -----
+  socket.on('voice-join', (data) => {
+    const channelId = String((data && data.channel) || '');
+    if (!canUseVoice(user, channelId)) return;
+    leaveAllVoice(user.id); // solo se puede estar en un canal de voz a la vez
+    if (!voice.has(channelId)) voice.set(channelId, new Map());
+    voice.get(channelId).set(user.id, socket.id);
+    emitVoiceState(channelId);
   });
 
   socket.on('voice-leave', () => {
-    const info = voiceMembers.get(user.id);
-    if (info && info.socketId === socket.id) {
-      voiceMembers.delete(user.id);
-      emitVoiceState();
-      const other = otherVoiceSocket(user.id);
-      if (other) other.emit('voice-peer-left', { userId: user.id });
+    leaveAllVoice(user.id, socket.id);
+  });
+
+  // Señalización dirigida: cada par de personas negocia su propia conexión
+  socket.on('rtc', (data) => {
+    const channelId = String((data && data.channel) || '');
+    const to = String((data && data.to) || '');
+    const room = voice.get(channelId);
+    if (!room || room.get(user.id) !== socket.id || !room.has(to)) return;
+    const target = io.sockets.sockets.get(room.get(to));
+    if (target) target.emit('rtc', { channel: channelId, from: user.id, payload: data.payload });
+  });
+
+  socket.on('voice-status', (data) => {
+    const channelId = String((data && data.channel) || '');
+    const room = voice.get(channelId);
+    if (!room || room.get(user.id) !== socket.id) return;
+    for (const [uid, sid] of room) {
+      if (uid === user.id) continue;
+      const target = io.sockets.sockets.get(sid);
+      if (target) target.emit('voice-status', { channel: channelId, userId: user.id, status: data.status });
     }
   });
 
-  // Señalización WebRTC entre los dos miembros de la sala
-  socket.on('rtc', (payload) => {
-    const me = voiceMembers.get(user.id);
-    if (!me || me.socketId !== socket.id) return;
-    const other = otherVoiceSocket(user.id);
-    if (other) other.emit('rtc', { from: user.id, payload });
-  });
-
-  // Estado de micrófono / cámara / pantalla del compañero
-  socket.on('voice-status', (status) => {
-    const other = otherVoiceSocket(user.id);
-    if (other) other.emit('voice-status', { userId: user.id, status });
-  });
-
-  // ----- Llamadas estilo WhatsApp (timbran al otro) -----
+  // ----- Llamadas directas (timbran a todos los conectados) -----
   socket.on('call-start', (data) => {
     const video = !!(data && data.video);
     for (const [uid, set] of onlineSockets) {
@@ -313,7 +500,7 @@ io.on('connection', (socket) => {
     for (const [uid, set] of onlineSockets) {
       for (const s of set) {
         if (s === socket) continue;
-        if (uid === user.id) s.emit('call-handled'); // otro dispositivo mío deja de sonar
+        if (uid === user.id) s.emit('call-handled');
         else s.emit('call-accepted', { by: publicUser(user) });
       }
     }
@@ -340,13 +527,7 @@ io.on('connection', (socket) => {
       set.delete(socket);
       if (set.size === 0) onlineSockets.delete(user.id);
     }
-    const info = voiceMembers.get(user.id);
-    if (info && info.socketId === socket.id) {
-      voiceMembers.delete(user.id);
-      emitVoiceState();
-      const other = otherVoiceSocket(user.id);
-      if (other) other.emit('voice-peer-left', { userId: user.id });
-    }
+    leaveAllVoice(user.id, socket.id);
     io.emit('presence', { online: presenceList() });
   });
 });

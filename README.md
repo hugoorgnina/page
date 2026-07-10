@@ -4,17 +4,18 @@ Un "Discord" privado **solo para dos personas**. Funciona desde el navegador del
 
 ## Qué puede hacer
 
-- 💬 **Chat de texto** con historial
-- 📷 **Enviar fotos** (desde la galería o la cámara del celular)
-- 🎧 **Sala de voz**: entras y sales cuando quieras, y **el otro puede quedarse dentro esperándote** (como en Discord)
-- 📞 **Llamadas tipo WhatsApp**: le "timbra" al otro con sonido y vibración, y puede aceptar o rechazar
-- 🎥 **Videollamada**: activa y desactiva la **cámara** cuando quieras, el micrófono sigue funcionando
-- 🖥️ **Compartir pantalla** (en PC y en varios Android; en iPhone el sistema no lo permite desde el navegador)
+- 🧭 **Servers como en Discord**: crea un server con nombre y foto, y aparece en el **buscador** para que los demás se unan. Ponle **contraseña** si quieres que sea privado (solo entra quien la sepa).
+- 📚 **Canales**: cada server tiene canales de **texto** (#general y los que cree el dueño) y de **voz**.
+- 🎧 **Canales de voz grupales**: entra y sal cuando quieras; los demás se quedan dentro. Soporta a varios a la vez, cada uno con su cuadrito.
+- 💬 **Chat de texto** con historial y 📷 **fotos** (galería o cámara del celular)
+- 📞 **Llamadas tipo WhatsApp**: timbran con sonido y vibración, se aceptan o rechazan
+- 🎥 **Cámara** que se prende y apaga sin cortar el micrófono
+- 🖥️ **Compartir pantalla** (PC y varios Android; en iPhone el sistema no lo permite desde el navegador)
 - 🖼️ **Foto de perfil** para cada uno
-- 🔑 **Iniciar sesión con Google** (opcional, ver abajo; si no lo configuras, se entra con nombre y contraseña)
-- 📱 Se puede **"instalar" como app** en el celular: en Chrome → menú ⋮ → *Agregar a pantalla de inicio*
+- 🔑 **Iniciar sesión con Google** (opcional; si no, con nombre y contraseña)
+- 📱 Se puede **"instalar" como app**: en Chrome → menú ⋮ → *Agregar a pantalla de inicio*
 
-Se pueden crear hasta **12 cuentas** (configurable con `MAX_USERS`); después de eso nadie más puede registrarse aunque tenga el enlace. La app está pensada para usarse de a dos: el chat, la sala de voz y las llamadas son de la pareja.
+Se pueden crear hasta **12 cuentas** (configurable con `MAX_USERS`); después de eso nadie más puede registrarse aunque tenga el enlace.
 
 ## Cómo publicarlo gratis (paso a paso, con Render)
 
