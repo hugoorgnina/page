@@ -14,7 +14,7 @@ Un "Discord" privado **solo para dos personas**. Funciona desde el navegador del
 - 🔑 **Iniciar sesión con Google** (opcional, ver abajo; si no lo configuras, se entra con nombre y contraseña)
 - 📱 Se puede **"instalar" como app** en el celular: en Chrome → menú ⋮ → *Agregar a pantalla de inicio*
 
-Está limitado a **2 cuentas**: nadie más puede registrarse aunque tenga el enlace.
+Se pueden crear hasta **12 cuentas** (configurable con `MAX_USERS`); después de eso nadie más puede registrarse aunque tenga el enlace. La app está pensada para usarse de a dos: el chat, la sala de voz y las llamadas son de la pareja.
 
 ## Cómo publicarlo gratis (paso a paso, con Render)
 
@@ -57,7 +57,7 @@ Si no lo configuras, no pasa nada: se entra con nombre y contraseña. Si lo quie
 | Variable | Para qué sirve | Por defecto |
 |---|---|---|
 | `PORT` | Puerto del servidor | `3000` |
-| `MAX_USERS` | Cuántas cuentas se pueden crear | `2` |
+| `MAX_USERS` | Cuántas cuentas se pueden crear | `12` |
 | `INVITE_CODE` | Si lo pones, se necesita ese código para crear cuenta | (vacío) |
 | `GOOGLE_CLIENT_ID` | Activa el botón "Iniciar con Google" | (vacío) |
 | `DATA_DIR` | Carpeta donde se guardan mensajes y fotos | `./data` |

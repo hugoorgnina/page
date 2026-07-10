@@ -52,6 +52,18 @@ input::placeholder { color: var(--muted); }
   font-size: 16px; font-weight: 600; transition: background .15s;
 }
 .btn-primary:active { background: var(--accent2); }
+.btn-secondary {
+  background: transparent; color: var(--accent2); border: 2px solid var(--accent);
+  border-radius: 10px; padding: 11px 18px; font-size: 16px; font-weight: 600;
+}
+.btn-secondary:active { background: rgba(88,101,242,.15); }
+.pass-wrap { position: relative; display: flex; }
+.pass-wrap input { flex: 1; padding-right: 46px; }
+.pass-wrap button {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  font-size: 18px; padding: 8px; border-radius: 8px; opacity: .75;
+}
+.pass-wrap button.showing { opacity: 1; background: rgba(88,101,242,.25); }
 .btn-primary.big { padding: 16px 32px; font-size: 17px; border-radius: 14px; }
 .btn-ghost { color: var(--muted); padding: 10px; font-size: 15px; }
 .btn-small {

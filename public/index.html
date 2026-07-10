@@ -21,10 +21,14 @@
       <h1>Ale y Hugo</h1>
       <p class="auth-sub">Solo para nosotros dos</p>
       <input id="authName" type="text" placeholder="Tu nombre" autocomplete="username" maxlength="30" />
-      <input id="authPass" type="password" placeholder="Contraseña" autocomplete="current-password" />
+      <div class="pass-wrap">
+        <input id="authPass" type="password" placeholder="Contraseña" autocomplete="current-password" />
+        <button id="togglePass" type="button" title="Ver contraseña">👁️</button>
+      </div>
       <input id="authInvite" type="text" placeholder="Código de invitación" class="hidden" />
-      <button id="authBtn" class="btn-primary">Entrar</button>
-      <p class="auth-hint">Si es tu primera vez, se crea tu cuenta con ese nombre y contraseña.</p>
+      <button id="authBtn" class="btn-primary">Iniciar sesión</button>
+      <button id="registerBtn" class="btn-secondary">Registrarse</button>
+      <p class="auth-hint">¿Primera vez? Dale a "Registrarse" para crear tu cuenta.</p>
       <div id="googleBtnWrap" class="hidden">
         <div class="divider"><span>o</span></div>
         <div id="googleBtn"></div>

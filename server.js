@@ -8,7 +8,7 @@ const { Server } = require('socket.io');
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
-const MAX_USERS = parseInt(process.env.MAX_USERS || '2', 10);
+const MAX_USERS = parseInt(process.env.MAX_USERS || '12', 10);
 const INVITE_CODE = process.env.INVITE_CODE || '';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const MAX_MESSAGES = 500;
@@ -101,19 +101,28 @@ app.get('/api/config', (req, res) => {
   });
 });
 
-// Entrar: si el nombre no existe crea la cuenta, si existe valida la contraseña.
+// Entrar o registrarse. mode: 'login' exige que la cuenta exista,
+// 'register' exige que no exista, y sin mode hace lo automático de antes
+// (lo usa la app para volver a entrar sola si el servidor se reinició).
 app.post('/api/auth', (req, res) => {
   const name = String(req.body.name || '').trim().slice(0, 30);
   const password = String(req.body.password || '');
+  const mode = req.body.mode;
   if (!name || password.length < 4) {
     return res.status(400).json({ error: 'datos_invalidos', message: 'Pon un nombre y una contraseña de al menos 4 letras.' });
   }
   let user = db.users.find((u) => u.name.toLowerCase() === name.toLowerCase());
   if (user) {
+    if (mode === 'register') {
+      return res.status(409).json({ error: 'ya_existe', message: 'Ese nombre ya tiene cuenta. Usa "Iniciar sesión".' });
+    }
     if (user.passHash !== sha256(password)) {
       return res.status(401).json({ error: 'pass_incorrecta', message: 'La contraseña no es correcta.' });
     }
   } else {
+    if (mode === 'login') {
+      return res.status(404).json({ error: 'no_existe', message: 'No hay ninguna cuenta con ese nombre. Usa "Registrarse".' });
+    }
     if (db.users.length >= MAX_USERS) {
       return res.status(403).json({ error: 'lleno', message: 'Este chat es privado, ya no hay lugares.' });
     }

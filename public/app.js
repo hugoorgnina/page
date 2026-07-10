@@ -203,16 +203,23 @@ async function restoreAvatarIfNeeded(me) {
   }
 }
 
-$('authBtn').addEventListener('click', doAuth);
-$('authPass').addEventListener('keydown', (e) => { if (e.key === 'Enter') doAuth(); });
+$('authBtn').addEventListener('click', () => doAuth('login'));
+$('registerBtn').addEventListener('click', () => doAuth('register'));
+$('authPass').addEventListener('keydown', (e) => { if (e.key === 'Enter') doAuth('login'); });
+$('togglePass').addEventListener('click', () => {
+  const inp = $('authPass');
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  $('togglePass').classList.toggle('showing', show);
+});
 
-async function doAuth() {
+async function doAuth(mode) {
   const name = $('authName').value.trim();
   const password = $('authPass').value;
   const invite = $('authInvite').value.trim();
   $('authError').textContent = '';
   try {
-    const r = await api('/api/auth', { body: { name, password, invite } });
+    const r = await api('/api/auth', { body: { name, password, invite, mode } });
     state.token = r.token;
     localStorage.setItem('token', r.token);
     localStorage.setItem('creds', JSON.stringify({ name, password, invite }));
