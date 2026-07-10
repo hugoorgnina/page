@@ -335,7 +335,9 @@ function renderAll() {
 function renderTopbar() {
   const found = state.currentChannelId ? findMyChannel(state.currentChannelId) : null;
   if (found) {
-    $('topbarTitle').textContent = '# ' + found.channel.name;
+    const t = $('topbarTitle');
+    t.innerHTML = '<span class="hash">#</span>';
+    t.appendChild(document.createTextNode(found.channel.name));
     $('topbarSub').textContent = found.server.name;
     setAvatar($('topbarIcon'), { id: found.server.id, name: found.server.name, avatar: found.server.icon });
   } else {
@@ -403,6 +405,7 @@ function connectSocket() {
   s.on('presence', ({ online }) => {
     state.lastOnline = online;
     setPeerStatusOnline();
+    renderMyServers();
   });
 
   s.on('users-updated', async () => {
@@ -437,7 +440,7 @@ function connectSocket() {
   s.on('typing', ({ userId, channel }) => {
     if (userId === state.me.id || channel !== state.currentChannelId) return;
     const t = $('typingIndicator');
-    t.textContent = `${getUser(userId).name} está escribiendo…`;
+    $('typingText').textContent = `${getUser(userId).name} está escribiendo`;
     t.classList.remove('hidden');
     clearTimeout(t._timer);
     t._timer = setTimeout(() => t.classList.add('hidden'), 2500);
@@ -539,20 +542,39 @@ function showNotification(msg) {
   } catch (_) {}
 }
 
-/* ================= Chat ================= */
+/* ================= Chat (estilo Discord: mensajes agrupados) ================= */
 
 let lastDay = null;
+let lastAuthor = null;
+let lastTs = 0;
 
 async function loadMessages(channelId) {
+  const list = $('messages');
+  list.innerHTML = '';
+  lastDay = null;
+  lastAuthor = null;
+  lastTs = 0;
+  const found = findMyChannel(channelId);
+  if (found) {
+    const intro = document.createElement('div');
+    intro.className = 'channel-intro';
+    const icon = document.createElement('div');
+    icon.className = 'ci-icon';
+    icon.textContent = '#';
+    intro.appendChild(icon);
+    const h = document.createElement('h2');
+    h.textContent = '¡Bienvenido a #' + found.channel.name + '!';
+    intro.appendChild(h);
+    const p = document.createElement('p');
+    p.textContent = `Este es el comienzo del canal #${found.channel.name} de ${found.server.name}.`;
+    intro.appendChild(p);
+    list.appendChild(intro);
+  }
   try {
     const { messages } = await api('/api/channels/' + channelId + '/messages');
-    $('messages').innerHTML = '';
-    lastDay = null;
     messages.forEach(appendMessage);
     scrollMessages(true);
-  } catch (_) {
-    $('messages').innerHTML = '';
-  }
+  } catch (_) {}
 }
 
 function appendMessage(msg) {
@@ -560,39 +582,60 @@ function appendMessage(msg) {
   const day = fmtDay(msg.ts);
   if (day !== lastDay) {
     lastDay = day;
+    lastAuthor = null;
     const sep = document.createElement('div');
     sep.className = 'day-sep';
     sep.textContent = day;
     list.appendChild(sep);
   }
-  const mine = msg.from === state.me.id;
-  const author = mine ? state.me : getUser(msg.from);
+  const author = msg.from === state.me.id ? state.me : getUser(msg.from);
+  // agrupa mensajes seguidos del mismo autor (menos de 5 min entre sí)
+  const grouped = lastAuthor === msg.from && msg.ts - lastTs < 5 * 60 * 1000;
+  lastAuthor = msg.from;
+  lastTs = msg.ts;
+
   const row = document.createElement('div');
-  row.className = 'msg' + (mine ? ' mine' : '');
+  row.className = 'dmsg' + (grouped ? ' grouped' : ' first');
 
-  const av = document.createElement('div');
-  av.className = 'avatar';
-  setAvatar(av, author);
-  row.appendChild(av);
+  const content = document.createElement('div');
+  content.className = 'dcontent';
 
-  const bubble = document.createElement('div');
-  bubble.className = 'bubble';
+  if (!grouped) {
+    const av = document.createElement('div');
+    av.className = 'avatar';
+    setAvatar(av, author);
+    row.appendChild(av);
+    const header = document.createElement('div');
+    header.className = 'dheader';
+    const name = document.createElement('span');
+    name.className = 'dname';
+    name.textContent = author.name;
+    name.style.color = colorFor(author.id);
+    header.appendChild(name);
+    const time = document.createElement('span');
+    time.className = 'dtime';
+    time.textContent = fmtTime(msg.ts);
+    header.appendChild(time);
+    content.appendChild(header);
+  }
+
   if (msg.type === 'image') {
-    bubble.classList.add('img-bubble');
+    const wrap = document.createElement('div');
+    wrap.className = 'dimg';
     const img = document.createElement('img');
     img.src = msg.url;
     img.loading = 'lazy';
     img.addEventListener('click', () => openImage(msg.url));
     img.addEventListener('load', () => scrollMessages());
-    bubble.appendChild(img);
+    wrap.appendChild(img);
+    content.appendChild(wrap);
   } else {
-    bubble.textContent = msg.text;
+    const text = document.createElement('div');
+    text.className = 'dtext';
+    text.textContent = msg.text;
+    content.appendChild(text);
   }
-  const time = document.createElement('span');
-  time.className = 'time';
-  time.textContent = (mine ? '' : author.name + ' · ') + fmtTime(msg.ts);
-  bubble.appendChild(time);
-  row.appendChild(bubble);
+  row.appendChild(content);
   list.appendChild(row);
 }
 
@@ -675,7 +718,14 @@ function serverCard(srv) {
   title.className = 'server-title';
   title.innerHTML = `<div class="s-name"></div><div class="s-meta"></div>`;
   title.querySelector('.s-name').textContent = (srv.hasPassword ? '🔒 ' : '') + srv.name;
-  title.querySelector('.s-meta').textContent = `${srv.members.length} miembro${srv.members.length === 1 ? '' : 's'}${srv.ownerId === state.me.id ? ' · tuyo' : ''}`;
+  const online = srv.members.filter((id) => state.lastOnline.includes(id)).length;
+  const meta = title.querySelector('.s-meta');
+  const dot = document.createElement('span');
+  dot.className = 'online-dot';
+  meta.appendChild(dot);
+  meta.appendChild(document.createTextNode(
+    `${online} en línea · ${srv.members.length} miembro${srv.members.length === 1 ? '' : 's'}${srv.ownerId === state.me.id ? ' · tuyo' : ''}`
+  ));
   head.appendChild(title);
   const chev = document.createElement('span');
   chev.className = 'server-chevron';
