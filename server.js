@@ -343,5 +343,5 @@ io.on('connection', (socket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Nuestro chat corriendo en http://localhost:${PORT}`);
+  console.log(`Ale y Hugo corriendo en http://localhost:${PORT}`);
 });

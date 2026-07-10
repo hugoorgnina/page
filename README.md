@@ -1,4 +1,4 @@
-# 💜 Nuestro Chat
+# 💜 Ale y Hugo
 
 Un "Discord" privado **solo para dos personas**. Funciona desde el navegador del celular (y también en PC), sin instalar nada y sin cuentas de Discord.
 

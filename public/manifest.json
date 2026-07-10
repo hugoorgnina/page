@@ -1,6 +1,6 @@
 {
-  "name": "Nuestro Chat",
-  "short_name": "Nuestro Chat",
+  "name": "Ale y Hugo",
+  "short_name": "Ale y Hugo",
   "description": "Chat privado para dos, con llamadas, cámara y compartir pantalla",
   "start_url": "/",
   "display": "standalone",

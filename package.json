@@ -1,5 +1,5 @@
 {
-  "name": "nuestro-chat",
+  "name": "ale-y-hugo",
   "version": "1.0.0",
   "description": "Chat privado para dos personas: mensajes, fotos, sala de voz, videollamadas y compartir pantalla",
   "main": "server.js",
