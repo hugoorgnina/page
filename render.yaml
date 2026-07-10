@@ -6,3 +6,7 @@ services:
     branch: claude/discord-clone-two-user-cvr9q4
     buildCommand: npm install
     startCommand: npm start
+    envVars:
+      # ID publico del cliente OAuth (el secreto NO va aqui ni se necesita)
+      - key: GOOGLE_CLIENT_ID
+        value: 764882841215-0jjff61mvuo5h6egaq6mk8nlr2c3nfdq.apps.googleusercontent.com
