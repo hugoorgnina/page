@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: ale-y-hugo
+    runtime: node
+    plan: free
+    branch: claude/discord-clone-two-user-cvr9q4
+    buildCommand: npm install
+    startCommand: npm start

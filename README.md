@@ -18,19 +18,16 @@ Está limitado a **2 cuentas**: nadie más puede registrarse aunque tenga el enl
 
 ## Cómo publicarlo gratis (paso a paso, con Render)
 
-Necesitas que esté en internet con **HTTPS** para que funcionen el micrófono y la cámara. La forma más fácil y gratis:
+Necesitas que esté en internet con **HTTPS** para que funcionen el micrófono y la cámara. La forma más fácil y gratis (ya viene el archivo `render.yaml` que configura todo solo):
 
-1. Entra a [render.com](https://render.com) y crea una cuenta (puedes usar tu cuenta de GitHub).
-2. Dale a **New → Web Service**.
-3. Conecta tu GitHub y elige este repositorio (`page`).
-4. Configuración:
-   - **Branch**: la rama donde está este código
-   - **Build Command**: `npm install`
-   - **Start Command**: `npm start`
-   - **Instance Type**: `Free`
-5. Dale a **Create Web Service** y espera 1-2 minutos.
-6. Render te da una dirección tipo `https://tu-app.onrender.com`. **Ese es tu Discord privado** 🎉
-7. Ábrelo en tu celular, crea tu cuenta (nombre + contraseña), y pásale el enlace a tu novia para que cree la suya.
+1. Entra a [render.com](https://render.com) y crea una cuenta con el botón **GitHub** (así se conecta solo a tus repositorios).
+2. Dale a **New → Blueprint**.
+3. Elige este repositorio (`page`) y la rama `claude/discord-clone-two-user-cvr9q4`.
+4. Dale a **Deploy** y espera 1-2 minutos. No hay que escribir nada: la configuración viene en `render.yaml`.
+5. Render te da una dirección tipo `https://ale-y-hugo.onrender.com`. **Ese es tu Discord privado** 🎉
+6. Ábrelo, crea tu cuenta (nombre + contraseña), y pásale el enlace a tu novia para que cree la suya.
+
+Si el Blueprint no te aparece, la ruta manual también sirve: **New → Web Service** → eliges el repo y la rama → Build Command `npm install`, Start Command `npm start`, Instance Type `Free`.
 
 > ⚠️ **Nota del plan gratis de Render**: si nadie usa la app por 15 minutos, el servidor "se duerme" y la primera visita tarda ~40 segundos en despertarlo. Además, cuando el servidor se reinicia, **el historial de chat y las fotos se borran** (la app vuelve a iniciar sesión sola, no tienes que hacer nada). Si más adelante quieren que el historial nunca se borre, se puede agregar un disco persistente en Render (de pago) apuntando la variable `DATA_DIR` al disco.
 
