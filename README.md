@@ -1,1 +1,74 @@
-# page
+# 💜 Nuestro Chat
+
+Un "Discord" privado **solo para dos personas**. Funciona desde el navegador del celular (y también en PC), sin instalar nada y sin cuentas de Discord.
+
+## Qué puede hacer
+
+- 💬 **Chat de texto** con historial
+- 📷 **Enviar fotos** (desde la galería o la cámara del celular)
+- 🎧 **Sala de voz**: entras y sales cuando quieras, y **el otro puede quedarse dentro esperándote** (como en Discord)
+- 📞 **Llamadas tipo WhatsApp**: le "timbra" al otro con sonido y vibración, y puede aceptar o rechazar
+- 🎥 **Videollamada**: activa y desactiva la **cámara** cuando quieras, el micrófono sigue funcionando
+- 🖥️ **Compartir pantalla** (en PC y en varios Android; en iPhone el sistema no lo permite desde el navegador)
+- 🖼️ **Foto de perfil** para cada uno
+- 🔑 **Iniciar sesión con Google** (opcional, ver abajo; si no lo configuras, se entra con nombre y contraseña)
+- 📱 Se puede **"instalar" como app** en el celular: en Chrome → menú ⋮ → *Agregar a pantalla de inicio*
+
+Está limitado a **2 cuentas**: nadie más puede registrarse aunque tenga el enlace.
+
+## Cómo publicarlo gratis (paso a paso, con Render)
+
+Necesitas que esté en internet con **HTTPS** para que funcionen el micrófono y la cámara. La forma más fácil y gratis:
+
+1. Entra a [render.com](https://render.com) y crea una cuenta (puedes usar tu cuenta de GitHub).
+2. Dale a **New → Web Service**.
+3. Conecta tu GitHub y elige este repositorio (`page`).
+4. Configuración:
+   - **Branch**: la rama donde está este código
+   - **Build Command**: `npm install`
+   - **Start Command**: `npm start`
+   - **Instance Type**: `Free`
+5. Dale a **Create Web Service** y espera 1-2 minutos.
+6. Render te da una dirección tipo `https://tu-app.onrender.com`. **Ese es tu Discord privado** 🎉
+7. Ábrelo en tu celular, crea tu cuenta (nombre + contraseña), y pásale el enlace a tu novia para que cree la suya.
+
+> ⚠️ **Nota del plan gratis de Render**: si nadie usa la app por 15 minutos, el servidor "se duerme" y la primera visita tarda ~40 segundos en despertarlo. Además, cuando el servidor se reinicia, **el historial de chat y las fotos se borran** (la app vuelve a iniciar sesión sola, no tienes que hacer nada). Si más adelante quieren que el historial nunca se borre, se puede agregar un disco persistente en Render (de pago) apuntando la variable `DATA_DIR` al disco.
+
+También funciona en Railway, Fly.io, Glitch o cualquier servidor con Node.js 18+.
+
+## Cómo probarlo en tu compu
+
+```bash
+npm install
+npm start
+```
+
+Y abre `http://localhost:3000`.
+
+## Iniciar sesión con Google (opcional)
+
+Si no lo configuras, no pasa nada: se entra con nombre y contraseña. Si lo quieres:
+
+1. Ve a [console.cloud.google.com](https://console.cloud.google.com) → crea un proyecto.
+2. **APIs y servicios → Pantalla de consentimiento OAuth** → tipo *Externo* → llena lo básico.
+3. **Credenciales → Crear credenciales → ID de cliente de OAuth** → tipo *Aplicación web*.
+4. En **Orígenes de JavaScript autorizados** pon tu dirección de Render (ej. `https://tu-app.onrender.com`).
+5. Copia el **Client ID** y en Render ve a **Environment** y agrega la variable `GOOGLE_CLIENT_ID` con ese valor.
+
+## Variables de entorno (todas opcionales)
+
+| Variable | Para qué sirve | Por defecto |
+|---|---|---|
+| `PORT` | Puerto del servidor | `3000` |
+| `MAX_USERS` | Cuántas cuentas se pueden crear | `2` |
+| `INVITE_CODE` | Si lo pones, se necesita ese código para crear cuenta | (vacío) |
+| `GOOGLE_CLIENT_ID` | Activa el botón "Iniciar con Google" | (vacío) |
+| `DATA_DIR` | Carpeta donde se guardan mensajes y fotos | `./data` |
+| `ICE_SERVERS` | JSON con servidores STUN/TURN propios para las llamadas | STUN de Google + TURN gratuito de Open Relay |
+
+## Consejos
+
+- **En iPhone** usa Safari; en Android usa Chrome. Ambos piden permiso de micrófono/cámara la primera vez.
+- **Compartir pantalla** funciona en PC (Chrome, Edge, Firefox) y en Android con Chrome reciente. En iPhone, Apple no lo permite desde el navegador.
+- Si la llamada conecta pero **no se escucha**, suele ser la red del celular bloqueando la conexión directa; ya viene configurado un servidor TURN gratuito de respaldo, pero si falla mucho pueden crear una cuenta gratis en [metered.ca](https://www.metered.ca/tools/openrelay/) y poner sus propios servidores en `ICE_SERVERS`.
+- La sala de voz recuerda que estabas dentro: si se te cae el internet un momento, vuelve a entrar sola.

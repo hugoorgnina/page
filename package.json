@@ -1,0 +1,16 @@
+{
+  "name": "nuestro-chat",
+  "version": "1.0.0",
+  "description": "Chat privado para dos personas: mensajes, fotos, sala de voz, videollamadas y compartir pantalla",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

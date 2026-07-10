@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#1e1f22" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Nuestro Chat</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icon.svg" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+  <!-- ============ PANTALLA DE ENTRAR ============ -->
+  <div id="authScreen" class="screen">
+    <div class="auth-card">
+      <div class="auth-logo">💜</div>
+      <h1>Nuestro Chat</h1>
+      <p class="auth-sub">Solo para nosotros dos</p>
+      <input id="authName" type="text" placeholder="Tu nombre" autocomplete="username" maxlength="30" />
+      <input id="authPass" type="password" placeholder="Contraseña" autocomplete="current-password" />
+      <input id="authInvite" type="text" placeholder="Código de invitación" class="hidden" />
+      <button id="authBtn" class="btn-primary">Entrar</button>
+      <p class="auth-hint">Si es tu primera vez, se crea tu cuenta con ese nombre y contraseña.</p>
+      <div id="googleBtnWrap" class="hidden">
+        <div class="divider"><span>o</span></div>
+        <div id="googleBtn"></div>
+      </div>
+      <p id="authError" class="auth-error"></p>
+    </div>
+  </div>
+
+  <!-- ============ APP PRINCIPAL ============ -->
+  <div id="appScreen" class="screen hidden">
+    <header class="topbar">
+      <div class="peer-info" id="peerInfo">
+        <div class="avatar" id="peerAvatar"></div>
+        <div class="peer-text">
+          <div class="peer-name" id="peerName">Esperando...</div>
+          <div class="peer-status" id="peerStatus">desconectado</div>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <button id="btnAudioCall" class="icon-btn" title="Llamar">📞</button>
+        <button id="btnVideoCall" class="icon-btn" title="Videollamada">🎥</button>
+        <button id="btnSettings" class="icon-btn" title="Ajustes">⚙️</button>
+      </div>
+    </header>
+
+    <!-- ---- Vista: Chat ---- -->
+    <main id="viewChat" class="view">
+      <div id="voiceBanner" class="voice-banner hidden">
+        <span id="voiceBannerText">🎧 En la sala de voz</span>
+        <button id="voiceBannerJoin" class="btn-small">Unirme</button>
+      </div>
+      <div id="messages" class="messages"></div>
+      <div id="typingIndicator" class="typing hidden">escribiendo…</div>
+      <div class="input-bar">
+        <button id="btnPhoto" class="icon-btn" title="Enviar foto">📷</button>
+        <input id="photoInput" type="file" accept="image/*" class="hidden" />
+        <input id="msgInput" type="text" placeholder="Escribe un mensaje…" autocomplete="off" />
+        <button id="btnSend" class="send-btn" title="Enviar">➤</button>
+      </div>
+    </main>
+
+    <!-- ---- Vista: Sala de voz ---- -->
+    <main id="viewVoice" class="view hidden">
+      <div id="voiceLobby" class="voice-lobby">
+        <div class="voice-room-card">
+          <div class="voice-room-icon">🎧</div>
+          <h2>Sala de voz</h2>
+          <p class="voice-room-desc">Entra y sal cuando quieras.<br/>El otro puede quedarse esperándote.</p>
+          <div id="voiceMembersList" class="voice-members"></div>
+          <button id="btnJoinVoice" class="btn-primary big">Entrar a la sala</button>
+        </div>
+      </div>
+
+      <div id="voiceRoom" class="voice-room hidden">
+        <div class="video-area" id="videoArea">
+          <div class="remote-wrap" id="remoteWrap">
+            <video id="remoteVideo" autoplay playsinline></video>
+            <div class="remote-placeholder" id="remotePlaceholder">
+              <div class="avatar big-avatar" id="remoteAvatar"></div>
+              <div id="remoteLabel" class="remote-label">Esperando a que entre…</div>
+              <div id="remoteMicState" class="mic-state hidden">🔇 micrófono silenciado</div>
+            </div>
+          </div>
+          <div class="local-pip" id="localPip">
+            <video id="localVideo" autoplay playsinline muted></video>
+          </div>
+        </div>
+        <div class="call-controls">
+          <button id="btnMic" class="ctrl-btn active" title="Micrófono">🎙️</button>
+          <button id="btnCam" class="ctrl-btn" title="Cámara">📹</button>
+          <button id="btnScreen" class="ctrl-btn" title="Compartir pantalla">🖥️</button>
+          <button id="btnLeaveVoice" class="ctrl-btn danger" title="Salir">📵</button>
+        </div>
+      </div>
+      <audio id="remoteAudio" autoplay></audio>
+    </main>
+
+    <!-- ---- Navegación inferior ---- -->
+    <nav class="bottomnav">
+      <button id="navChat" class="nav-btn active">💬<span>Chat</span><b id="chatBadge" class="badge hidden"></b></button>
+      <button id="navVoice" class="nav-btn">🎧<span>Voz</span><b id="voiceDot" class="dot hidden"></b></button>
+    </nav>
+  </div>
+
+  <!-- ============ OVERLAYS ============ -->
+  <div id="incomingCall" class="overlay hidden">
+    <div class="call-card">
+      <div class="avatar big-avatar ringing" id="incomingAvatar"></div>
+      <h2 id="incomingName">…</h2>
+      <p id="incomingType">Llamada entrante</p>
+      <div class="call-actions">
+        <button id="btnRejectCall" class="round-btn red">📵</button>
+        <button id="btnAcceptCall" class="round-btn green">📞</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="outgoingCall" class="overlay hidden">
+    <div class="call-card">
+      <div class="avatar big-avatar ringing" id="outgoingAvatar"></div>
+      <h2 id="outgoingName">…</h2>
+      <p>Llamando…</p>
+      <div class="call-actions">
+        <button id="btnCancelCall" class="round-btn red">📵</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="imageViewer" class="overlay dark hidden">
+    <img id="imageViewerImg" alt="" />
+    <button id="imageViewerClose" class="viewer-close">✕</button>
+  </div>
+
+  <div id="settingsOverlay" class="overlay hidden">
+    <div class="settings-card">
+      <h2>Mi perfil</h2>
+      <div class="settings-avatar-wrap">
+        <div class="avatar big-avatar" id="myAvatar"></div>
+        <button id="btnChangeAvatar" class="btn-small">Cambiar foto</button>
+        <input id="avatarInput" type="file" accept="image/*" class="hidden" />
+      </div>
+      <label>Nombre</label>
+      <input id="settingsName" type="text" maxlength="30" />
+      <button id="btnSaveProfile" class="btn-primary">Guardar</button>
+      <button id="btnLogout" class="btn-ghost">Cerrar sesión</button>
+      <button id="btnCloseSettings" class="btn-ghost">Cerrar</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

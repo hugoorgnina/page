@@ -1,0 +1,17 @@
+{
+  "name": "Nuestro Chat",
+  "short_name": "Nuestro Chat",
+  "description": "Chat privado para dos, con llamadas, cámara y compartir pantalla",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1e1f22",
+  "theme_color": "#1e1f22",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
