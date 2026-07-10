@@ -33,10 +33,7 @@ function setVolume(userId, v) {
   volumes[userId] = v;
   localStorage.setItem('volumes', JSON.stringify(volumes));
   const peer = state.voice.peers.get(userId);
-  if (peer) {
-    if (peer.gain) peer.gain.gain.value = v;
-    else if (peer.audioEl) peer.audioEl.volume = Math.min(v, 1);
-  }
+  if (peer) applyPeerVolume(peer, document.hidden);
 }
 
 const state = {
@@ -1070,6 +1067,7 @@ async function joinVoice(channelId, withVideo) {
   $('voiceLobby').classList.add('hidden');
   $('voiceRoom').classList.remove('hidden');
   state.voice.selfTile = makeTile(state.me, true); // mi propio cuadro en la cuadrícula
+  setMediaSession(true);
   state.socket.emit('voice-join', { channel: channelId });
   requestWakeLock();
   syncPeers();
@@ -1087,6 +1085,8 @@ function leaveVoice(silent) {
   $('voiceRoom').classList.add('hidden');
   $('voiceLobby').classList.remove('hidden');
   releaseWakeLock();
+  setMediaSession(false);
+  if (document.pictureInPictureElement) { document.exitPictureInPicture().catch(() => {}); }
   if (!silent) switchView('chat');
   renderVoiceBanner();
 }
@@ -1187,28 +1187,59 @@ function sendRtc(peer, payload) {
   state.socket.emit('rtc', { channel: state.voice.channel, to: peer.id, payload });
 }
 
-// El audio de cada persona pasa por un nodo de ganancia (volumen 0-200%).
-// El <audio> silenciado es necesario: sin él, el navegador no hace fluir
-// el audio remoto hacia WebAudio.
+// Audio de cada persona. Hasta 100% suena directo del reproductor
+// (los celulares lo dejan sonar aunque salgas de la app, como Discord).
+// Arriba de 100% se amplifica con WebAudio, y al irte a otra app se
+// cambia solo al modo seguro para que la voz nunca se corte.
 function attachPeerAudio(peer, track) {
   const stream = new MediaStream([track]);
   peer.audioEl = document.createElement('audio');
   peer.audioEl.autoplay = true;
   peer.audioEl.srcObject = stream;
   $('remoteAudios').appendChild(peer.audioEl);
-  try {
-    const c = ctx();
-    peer.srcNode = c.createMediaStreamSource(stream);
-    peer.gain = c.createGain();
-    peer.gain.gain.value = getVolume(peer.id);
-    peer.srcNode.connect(peer.gain).connect(c.destination);
-    peer.audioEl.muted = true;
-  } catch (_) {
-    // sin WebAudio: volumen normal limitado a 100%
-    peer.audioEl.volume = Math.min(getVolume(peer.id), 1);
-  }
+  applyPeerVolume(peer);
   peer.audioEl.play().catch(() => {});
 }
+
+function applyPeerVolume(peer, forceSimple) {
+  if (!peer.audioEl) return;
+  const v = getVolume(peer.id);
+  const wantBoost = v > 1.001 && !forceSimple;
+  if (!wantBoost) {
+    if (peer.gain) {
+      try { peer.srcNode.disconnect(); peer.gain.disconnect(); } catch (_) {}
+      peer.gain = null;
+      peer.srcNode = null;
+    }
+    peer.audioEl.muted = false;
+    peer.audioEl.volume = Math.max(0, Math.min(v, 1));
+    return;
+  }
+  try {
+    const c = ctx();
+    if (!peer.gain) {
+      peer.srcNode = c.createMediaStreamSource(peer.audioEl.srcObject);
+      peer.gain = c.createGain();
+      peer.srcNode.connect(peer.gain).connect(c.destination);
+    }
+    peer.gain.gain.value = v;
+    peer.audioEl.muted = true; // el sonido sale amplificado por WebAudio
+  } catch (_) {
+    peer.audioEl.muted = false;
+    peer.audioEl.volume = 1;
+  }
+}
+
+// Al salir de la app: modo seguro (el reproductor sigue sonando de fondo).
+// Al volver: se restaura el volumen elegido y se despierta WebAudio.
+document.addEventListener('visibilitychange', () => {
+  for (const peer of state.voice.peers.values()) {
+    applyPeerVolume(peer, document.hidden);
+  }
+  if (!document.hidden && audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
+  }
+});
 
 async function handleRtc(peer, { description, candidate }) {
   const pc = peer.pc;
@@ -1256,6 +1287,7 @@ function makeTile(member, isSelf) {
   video.muted = isSelf || undefined;
   video.setAttribute('playsinline', '');
   if (isSelf) video.setAttribute('muted', '');
+  video.setAttribute('autopictureinpicture', ''); // salta a ventanita al salir de la app (Chrome)
   root.appendChild(video);
   const wrap = document.createElement('div');
   wrap.className = 'tile-avatar-wrap';
@@ -1448,28 +1480,76 @@ $('btnCloseVolume').addEventListener('click', () => $('volumeOverlay').classList
 $('volumeOverlay').addEventListener('click', (e) => { if (e.target.id === 'volumeOverlay') $('volumeOverlay').classList.add('hidden'); });
 
 /* ---- Ventana flotante (Picture in Picture): seguir viéndose usando otras apps ---- */
-$('btnPip').addEventListener('click', async () => {
-  // elige el video: el expandido, si no el primero con video de otra persona, si no el mío
-  let video = document.querySelector('#tiles .tile.expanded.hasvideo video')
+
+// elige el video: el expandido, si no el de otra persona, si no el mío
+function pickPipVideo() {
+  return document.querySelector('#tiles .tile.expanded.hasvideo video')
     || document.querySelector('#tiles .tile.hasvideo:not(.self) video')
     || document.querySelector('#tiles .tile.hasvideo video');
+}
+
+async function enterPip(video, silent) {
+  // espera a que el video tenga imagen (si acaba de llegar)
+  if (video.readyState === 0) {
+    await new Promise((res) => {
+      video.addEventListener('loadedmetadata', res, { once: true });
+      setTimeout(res, 1500);
+    });
+  }
+  await video.play().catch(() => {});
+  if (video.requestPictureInPicture) {
+    await video.requestPictureInPicture();
+  } else if (video.webkitSupportsPresentationMode
+    && video.webkitSupportsPresentationMode('picture-in-picture')) {
+    video.webkitSetPresentationMode('picture-in-picture');
+  } else {
+    if (!silent) toast('Tu navegador no permite ventana flotante. Prueba el botón ⛶ del video y luego sal al inicio 📱');
+    return false;
+  }
+  if (!silent) toast('Listo: sal a otras apps, el video queda flotando y el audio sigue 🪟');
+  return true;
+}
+
+$('btnPip').addEventListener('click', async () => {
+  if (document.pictureInPictureElement) {
+    try { await document.exitPictureInPicture(); } catch (_) {}
+    return;
+  }
+  const video = pickPipVideo();
   if (!video) { toast('Nadie tiene video prendido ahora mismo 📹'); return; }
   try {
-    if (document.pictureInPictureElement) {
-      await document.exitPictureInPicture();
-    } else if (video.requestPictureInPicture) {
-      await video.requestPictureInPicture();
-      toast('Ya puedes salir a otras apps: el video queda flotando y el audio sigue 🪟');
-    } else if (video.webkitSetPresentationMode) {
-      video.webkitSetPresentationMode('picture-in-picture');
-      toast('Ya puedes salir a otras apps: el video queda flotando y el audio sigue 🪟');
-    } else {
-      toast('Tu navegador no permite ventana flotante 😕');
-    }
-  } catch (_) {
-    toast('No se pudo abrir la ventana flotante');
+    await enterPip(video, false);
+  } catch (e) {
+    toast('No se pudo la ventana flotante (' + (e && (e.message || e.name) || '?') + '). Prueba ⛶ y luego sal al inicio 📱', 4000);
   }
 });
+
+// Chrome moderno: permite que el video salte a ventana flotante SOLO
+// cuando el usuario se va de la app (registrando este handler)
+try {
+  navigator.mediaSession.setActionHandler('enterpictureinpicture', async () => {
+    const video = pickPipVideo();
+    if (video) { try { await enterPip(video, true); } catch (_) {} }
+  });
+} catch (_) { /* no soportado, no pasa nada */ }
+
+// Presenta la llamada al sistema como audio activo (ayuda a que
+// el celular no corte el sonido en segundo plano)
+function setMediaSession(active) {
+  if (!('mediaSession' in navigator)) return;
+  try {
+    if (active) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: 'En llamada 💜',
+        artist: 'Ale y Hugo'
+      });
+      navigator.mediaSession.playbackState = 'playing';
+    } else {
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = 'none';
+    }
+  } catch (_) {}
+}
 
 async function requestWakeLock() {
   try { state.wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}
