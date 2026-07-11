@@ -4,7 +4,10 @@ Un "Discord" privado **solo para dos personas**. Funciona desde el navegador del
 
 ## Qué puede hacer
 
-- 🧭 **Servers como en Discord**: crea un server con nombre y foto, y aparece en el **buscador** para que los demás se unan. Ponle **contraseña** si quieres que sea privado (solo entra quien la sepa).
+- 🧭 **Servers como en Discord**: crea un server con nombre y foto; todos los servers aparecen **listados** en la pestaña Servers (con buscador) para que cualquiera se una. Ponle **contraseña** si quieres que sea privado.
+- 👑 **Roles con permisos**: crea roles con color y 14 permisos reales (administrador, gestionar canales/roles/mensajes, expulsar, banear, hablar, cámara, silenciar a otros…), asígnalos por miembro y los nombres toman el color del rol.
+- 💌 **Mensajes directos** entre dos personas, privados del resto.
+- 🔊 **Volumen por persona (0-200%)** y **volumen aparte para la transmisión** de pantalla (que puede llevar sonido si se comparte desde PC).
 - 📚 **Canales**: cada server tiene canales de **texto** (#general y los que cree el dueño) y de **voz**.
 - 🎧 **Canales de voz grupales**: entra y sal cuando quieras; los demás se quedan dentro. Soporta a varios a la vez, cada uno con su cuadrito.
 - 💬 **Chat de texto** con historial y 📷 **fotos** (galería o cámara del celular)

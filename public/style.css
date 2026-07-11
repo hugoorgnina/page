@@ -160,6 +160,12 @@ input::placeholder { color: var(--muted2); }
 .dimg { margin: 3px 0 2px; }
 .dimg img { max-width: min(260px, 70vw); max-height: 300px; border-radius: 8px; display: block; }
 
+.msg-del {
+  margin-left: auto; align-self: flex-start; opacity: .22; font-size: 13px;
+  padding: 2px 6px; flex-shrink: 0; border-radius: 6px;
+}
+.msg-del:active { opacity: 1; background: var(--bg-raised); }
+
 .typing { padding: 2px 16px 6px; color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 6px; }
 .tdots { display: inline-flex; gap: 3px; }
 .tdots i {

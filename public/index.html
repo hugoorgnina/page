@@ -11,7 +11,7 @@
   <link rel="manifest" href="/manifest.json" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icon-180.png" />
-  <link rel="stylesheet" href="/style.css?v=8" />
+  <link rel="stylesheet" href="/style.css?v=9" />
 </head>
 <body>
 
@@ -110,9 +110,12 @@
           <input id="serverSearch" type="text" placeholder="🔍 Buscar servers…" autocomplete="off" />
           <button id="btnCreateServer" class="btn-small">+ Crear</button>
         </div>
-        <div id="searchResults" class="server-list hidden"></div>
-        <h3 class="servers-heading">Mis servers</h3>
+        <h3 class="servers-heading">💬 Mensajes directos</h3>
+        <div id="dmList" class="server-list"></div>
+        <h3 class="servers-heading">⭐ Mis servers</h3>
         <div id="myServers" class="server-list"></div>
+        <h3 class="servers-heading">🌐 Todos los servers</h3>
+        <div id="allServers" class="server-list"></div>
       </div>
     </main>
 
@@ -242,20 +245,53 @@
   <div id="volumeOverlay" class="overlay hidden">
     <div class="settings-card">
       <h2 id="volumeTitle">Volumen</h2>
+      <label>🎙️ Voz</label>
       <div class="volume-row">
         <span>🔈</span>
         <input id="volumeSlider" type="range" min="0" max="200" step="5" />
         <span>🔊</span>
       </div>
       <div id="volumeValue" class="volume-value">100%</div>
-      <button id="btnVolumeReset" class="btn-secondary">Volver al 100%</button>
+      <label>🖥️ Transmisión (pantalla compartida)</label>
+      <div class="volume-row">
+        <span>🔈</span>
+        <input id="streamVolSlider" type="range" min="0" max="200" step="5" />
+        <span>🔊</span>
+      </div>
+      <div id="streamVolValue" class="volume-value">100%</div>
+      <p class="auth-hint" style="text-align:left">La transmisión solo trae sonido si se comparte desde PC marcando "compartir audio".</p>
+      <div id="volModRow" class="channel-type-row hidden">
+        <button id="btnModMute" class="btn-secondary">🔇 Silenciar</button>
+        <button id="btnModKick" class="btn-secondary">⛔ Sacar de voz</button>
+      </div>
+      <button id="btnVolumeReset" class="btn-secondary">Volver todo al 100%</button>
       <button id="btnCloseVolume" class="btn-ghost">Cerrar</button>
+    </div>
+  </div>
+
+  <!-- Ajustes del server (roles, miembros, canales) -->
+  <div id="serverSettingsOverlay" class="overlay hidden">
+    <div class="settings-card">
+      <h2 id="ssTitle">Ajustes del server</h2>
+      <div id="ssBody"></div>
+      <button id="btnCloseServerSettings" class="btn-ghost">Cerrar</button>
+    </div>
+  </div>
+
+  <!-- Editor de rol -->
+  <div id="roleEditOverlay" class="overlay hidden">
+    <div class="settings-card">
+      <h2 id="reTitle">Rol</h2>
+      <div id="reBody"></div>
+      <button id="btnSaveRole" class="btn-primary">Guardar rol</button>
+      <button id="btnCloseRoleEdit" class="btn-ghost">Cancelar</button>
+      <p id="reError" class="auth-error"></p>
     </div>
   </div>
 
   <div id="toast" class="toast hidden"></div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/app.js?v=8"></script>
+  <script src="/app.js?v=9"></script>
 </body>
 </html>

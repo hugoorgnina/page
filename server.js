@@ -41,6 +41,55 @@ if (Array.isArray(db.messages)) {
 if (!Array.isArray(db.servers)) db.servers = [];
 if (typeof db.messages !== 'object' || db.messages === null) db.messages = {};
 
+// ---------- Roles y permisos (como Discord, con lo que la app puede hacer) ----------
+const PERM_KEYS = [
+  'admin', 'manageServer', 'manageChannels', 'manageRoles', 'manageMessages',
+  'kickMembers', 'banMembers', 'sendMessages', 'attachFiles',
+  'connect', 'speak', 'video', 'muteMembers', 'disconnectMembers'
+];
+const EVERYONE_PERMS = { sendMessages: true, attachFiles: true, connect: true, speak: true, video: true };
+
+function cleanPerms(p) {
+  const out = {};
+  for (const k of PERM_KEYS) out[k] = !!(p && p[k]);
+  return out;
+}
+function ensureServerDefaults(s) {
+  if (!Array.isArray(s.roles)) s.roles = [];
+  if (!s.roles.some((r) => r.id === 'everyone')) {
+    s.roles.unshift({ id: 'everyone', name: '@todos', color: '#949ba4', perms: cleanPerms(EVERYONE_PERMS) });
+  }
+  if (!s.memberRoles || typeof s.memberRoles !== 'object') s.memberRoles = {};
+  if (!Array.isArray(s.banned)) s.banned = [];
+}
+db.servers.forEach(ensureServerDefaults);
+
+// Permisos efectivos: dueño y Administrador lo pueden todo;
+// el resto es la suma de @todos + sus roles
+function getPerms(s, userId) {
+  const all = {};
+  for (const k of PERM_KEYS) all[k] = true;
+  if (s.ownerId === userId) return all;
+  const roleIds = ['everyone', ...(s.memberRoles[userId] || [])];
+  const merged = {};
+  for (const k of PERM_KEYS) {
+    merged[k] = roleIds.some((rid) => {
+      const r = s.roles.find((x) => x.id === rid);
+      return r && r.perms[k];
+    });
+  }
+  if (merged.admin) return all;
+  return merged;
+}
+
+// ---------- Mensajes directos (MD) entre dos personas ----------
+function dmChannelId(a, b) { return 'dm-' + [a, b].sort().join('-'); }
+function parseDm(channelId) {
+  if (typeof channelId !== 'string' || !channelId.startsWith('dm-')) return null;
+  const parts = channelId.slice(3).split('-');
+  return parts.length === 2 ? parts : null;
+}
+
 let saveTimer = null;
 function save() {
   clearTimeout(saveTimer);
@@ -85,7 +134,8 @@ function serverSummary(s, userId) {
 function serverFull(s) {
   return {
     id: s.id, name: s.name, icon: s.icon, ownerId: s.ownerId,
-    hasPassword: !!s.passHash, members: s.members, channels: s.channels
+    hasPassword: !!s.passHash, members: s.members, channels: s.channels,
+    roles: s.roles, memberRoles: s.memberRoles
   };
 }
 
@@ -263,10 +313,10 @@ app.get('/api/servers', auth, (req, res) => {
   res.json({ servers: list.map((s) => serverSummary(s, req.user.id)) });
 });
 
-// Mis servers, con canales completos
+// Mis servers, con canales completos y mis permisos calculados
 app.get('/api/servers/mine', auth, (req, res) => {
   const mine = db.servers.filter((s) => s.members.includes(req.user.id));
-  res.json({ servers: mine.map(serverFull) });
+  res.json({ servers: mine.map((s) => ({ ...serverFull(s), perms: getPerms(s, req.user.id) })) });
 });
 
 app.post('/api/servers', auth, (req, res) => {
@@ -283,6 +333,7 @@ app.post('/api/servers', auth, (req, res) => {
       { id: newId(), name: 'General', type: 'voice' }
     ]
   };
+  ensureServerDefaults(s);
   if (req.body.iconDataUrl) s.icon = saveDataUrl(req.body.iconDataUrl);
   db.servers.push(s);
   save();
@@ -295,6 +346,9 @@ app.post('/api/servers/:id/join', auth, (req, res) => {
   const s = findServer(req.params.id);
   if (!s) return res.status(404).json({ error: 'no_existe', message: 'Ese server ya no existe.' });
   if (s.members.includes(req.user.id)) return res.json({ server: serverFull(s) });
+  if (s.banned.includes(req.user.id)) {
+    return res.status(403).json({ error: 'baneado', message: 'Estás baneado de este server.' });
+  }
   if (s.passHash && s.passHash !== sha256(String(req.body.password || ''))) {
     return res.status(403).json({ error: 'password', message: 'Contraseña del server incorrecta.' });
   }
@@ -330,8 +384,8 @@ app.post('/api/servers/:id/leave', auth, (req, res) => {
 app.post('/api/servers/:id/channels', auth, (req, res) => {
   const s = findServer(req.params.id);
   if (!s) return res.status(404).json({ error: 'no_existe' });
-  if (s.ownerId !== req.user.id) {
-    return res.status(403).json({ error: 'no_dueno', message: 'Solo el dueño del server puede crear canales.' });
+  if (!s.members.includes(req.user.id) || !getPerms(s, req.user.id).manageChannels) {
+    return res.status(403).json({ error: 'sin_permiso', message: 'No tienes permiso para gestionar canales.' });
   }
   if (s.channels.length >= 20) return res.status(403).json({ error: 'limite', message: 'Máximo 20 canales por server.' });
   const name = String(req.body.name || '').trim().slice(0, 30).replace(/\s+/g, '-').toLowerCase();
@@ -344,10 +398,166 @@ app.post('/api/servers/:id/channels', auth, (req, res) => {
   res.json({ channel: ch });
 });
 
+app.delete('/api/servers/:id/channels/:chId', auth, (req, res) => {
+  const s = findServer(req.params.id);
+  if (!s) return res.status(404).json({ error: 'no_existe' });
+  if (!getPerms(s, req.user.id).manageChannels) {
+    return res.status(403).json({ error: 'sin_permiso', message: 'No tienes permiso para gestionar canales.' });
+  }
+  const ch = s.channels.find((c) => c.id === req.params.chId);
+  if (!ch) return res.status(404).json({ error: 'no_existe' });
+  if (ch.type === 'text' && s.channels.filter((c) => c.type === 'text').length <= 1) {
+    return res.status(400).json({ error: 'ultimo', message: 'No puedes borrar el último canal de texto.' });
+  }
+  s.channels = s.channels.filter((c) => c.id !== ch.id);
+  delete db.messages[ch.id];
+  if (voice.has(ch.id)) {
+    for (const [uid] of voice.get(ch.id)) removeFromVoice(uid, ch.id);
+  }
+  save();
+  io.to('server:' + s.id).emit('server-changed', { serverId: s.id });
+  res.json({ ok: true });
+});
+
+// Editar el server (nombre, foto, contraseña)
+app.patch('/api/servers/:id', auth, (req, res) => {
+  const s = findServer(req.params.id);
+  if (!s) return res.status(404).json({ error: 'no_existe' });
+  if (!getPerms(s, req.user.id).manageServer) {
+    return res.status(403).json({ error: 'sin_permiso', message: 'No tienes permiso para gestionar el server.' });
+  }
+  if (req.body.name) s.name = String(req.body.name).trim().slice(0, 40) || s.name;
+  if (req.body.iconDataUrl) {
+    const url = saveDataUrl(req.body.iconDataUrl);
+    if (url) s.icon = url;
+  }
+  if (typeof req.body.password === 'string') {
+    s.passHash = req.body.password ? sha256(req.body.password) : null;
+  }
+  save();
+  io.emit('server-list-updated');
+  io.to('server:' + s.id).emit('server-changed', { serverId: s.id });
+  res.json({ server: serverFull(s) });
+});
+
+// ---------- Roles ----------
+function requirePerm(perm) {
+  return (req, res, next) => {
+    const s = findServer(req.params.id);
+    if (!s) return res.status(404).json({ error: 'no_existe' });
+    if (!s.members.includes(req.user.id) || !getPerms(s, req.user.id)[perm]) {
+      return res.status(403).json({ error: 'sin_permiso', message: 'No tienes permiso para hacer eso.' });
+    }
+    req.server = s;
+    next();
+  };
+}
+
+app.post('/api/servers/:id/roles', auth, requirePerm('manageRoles'), (req, res) => {
+  const s = req.server;
+  if (s.roles.length >= 15) return res.status(403).json({ error: 'limite', message: 'Máximo 15 roles.' });
+  const role = {
+    id: newId(),
+    name: String(req.body.name || 'nuevo rol').trim().slice(0, 30) || 'nuevo rol',
+    color: /^#[0-9a-f]{6}$/i.test(req.body.color || '') ? req.body.color : '#5865f2',
+    perms: cleanPerms(req.body.perms)
+  };
+  s.roles.push(role);
+  save();
+  io.to('server:' + s.id).emit('server-changed', { serverId: s.id });
+  res.json({ role });
+});
+
+app.patch('/api/servers/:id/roles/:roleId', auth, requirePerm('manageRoles'), (req, res) => {
+  const s = req.server;
+  const role = s.roles.find((r) => r.id === req.params.roleId);
+  if (!role) return res.status(404).json({ error: 'no_existe' });
+  if (role.id !== 'everyone') {
+    if (req.body.name) role.name = String(req.body.name).trim().slice(0, 30) || role.name;
+    if (/^#[0-9a-f]{6}$/i.test(req.body.color || '')) role.color = req.body.color;
+  }
+  if (req.body.perms) role.perms = cleanPerms(req.body.perms);
+  save();
+  io.to('server:' + s.id).emit('server-changed', { serverId: s.id });
+  res.json({ role });
+});
+
+app.delete('/api/servers/:id/roles/:roleId', auth, requirePerm('manageRoles'), (req, res) => {
+  const s = req.server;
+  if (req.params.roleId === 'everyone') return res.status(400).json({ error: 'protegido', message: 'El rol @todos no se puede borrar.' });
+  s.roles = s.roles.filter((r) => r.id !== req.params.roleId);
+  for (const uid of Object.keys(s.memberRoles)) {
+    s.memberRoles[uid] = s.memberRoles[uid].filter((rid) => rid !== req.params.roleId);
+  }
+  save();
+  io.to('server:' + s.id).emit('server-changed', { serverId: s.id });
+  res.json({ ok: true });
+});
+
+// Asignar o quitar un rol a un miembro
+app.post('/api/servers/:id/members/:uid/roles', auth, requirePerm('manageRoles'), (req, res) => {
+  const s = req.server;
+  const uid = req.params.uid;
+  if (!s.members.includes(uid)) return res.status(404).json({ error: 'no_miembro' });
+  const roleId = String(req.body.roleId || '');
+  if (roleId === 'everyone' || !s.roles.some((r) => r.id === roleId)) {
+    return res.status(400).json({ error: 'rol_invalido' });
+  }
+  if (!s.memberRoles[uid]) s.memberRoles[uid] = [];
+  if (req.body.add) {
+    if (!s.memberRoles[uid].includes(roleId)) s.memberRoles[uid].push(roleId);
+  } else {
+    s.memberRoles[uid] = s.memberRoles[uid].filter((r) => r !== roleId);
+  }
+  save();
+  io.to('server:' + s.id).emit('server-changed', { serverId: s.id });
+  res.json({ ok: true });
+});
+
+// Expulsar / banear
+function removeMember(s, uid) {
+  s.members = s.members.filter((id) => id !== uid);
+  delete s.memberRoles[uid];
+  for (const ch of s.channels) {
+    if (ch.type === 'voice') removeFromVoice(uid, ch.id);
+  }
+  leaveSocketsFromRoom(uid, 'server:' + s.id);
+  for (const sock of socketsOf(uid)) sock.emit('server-changed', { serverId: s.id });
+}
+
+app.post('/api/servers/:id/kick', auth, requirePerm('kickMembers'), (req, res) => {
+  const s = req.server;
+  const uid = String(req.body.userId || '');
+  if (uid === s.ownerId) return res.status(400).json({ error: 'es_dueno', message: 'No puedes expulsar al dueño.' });
+  if (!s.members.includes(uid)) return res.status(404).json({ error: 'no_miembro' });
+  removeMember(s, uid);
+  save();
+  io.emit('server-list-updated');
+  io.to('server:' + s.id).emit('server-changed', { serverId: s.id });
+  res.json({ ok: true });
+});
+
+app.post('/api/servers/:id/ban', auth, requirePerm('banMembers'), (req, res) => {
+  const s = req.server;
+  const uid = String(req.body.userId || '');
+  if (uid === s.ownerId) return res.status(400).json({ error: 'es_dueno', message: 'No puedes banear al dueño.' });
+  if (!s.banned.includes(uid)) s.banned.push(uid);
+  if (s.members.includes(uid)) removeMember(s, uid);
+  save();
+  io.emit('server-list-updated');
+  io.to('server:' + s.id).emit('server-changed', { serverId: s.id });
+  res.json({ ok: true });
+});
+
 app.get('/api/channels/:id/messages', auth, (req, res) => {
-  const found = findChannel(req.params.id);
-  if (!found || !found.server.members.includes(req.user.id)) {
-    return res.status(403).json({ error: 'sin_acceso' });
+  const dm = parseDm(req.params.id);
+  if (dm) {
+    if (!dm.includes(req.user.id)) return res.status(403).json({ error: 'sin_acceso' });
+  } else {
+    const found = findChannel(req.params.id);
+    if (!found || !found.server.members.includes(req.user.id)) {
+      return res.status(403).json({ error: 'sin_acceso' });
+    }
   }
   res.json({ messages: db.messages[req.params.id] || [] });
 });
@@ -401,7 +611,8 @@ function leaveAllVoice(userId, socketId) {
 function canUseVoice(user, channelId) {
   if (channelId === CALL_CHANNEL) return true;
   const found = findChannel(channelId);
-  return !!(found && found.channel.type === 'voice' && found.server.members.includes(user.id));
+  return !!(found && found.channel.type === 'voice' && found.server.members.includes(user.id)
+    && getPerms(found.server, user.id).connect);
 }
 
 io.use((socket, next) => {
@@ -428,12 +639,29 @@ io.on('connection', (socket) => {
   }
   socket.emit('voice-snapshot', { states: snapshot });
 
-  // ----- Chat por canal -----
+  // Manda un evento a los dos lados de un MD
+  function emitToDm(dm, event, payload) {
+    for (const uid of dm) {
+      for (const s of socketsOf(uid)) s.emit(event, payload);
+    }
+  }
+
+  // ----- Chat por canal (de server o MD) -----
   socket.on('chat', (data) => {
     const channelId = String((data && data.channel) || '');
-    const found = findChannel(channelId);
-    if (!found || found.channel.type !== 'text' || !found.server.members.includes(user.id)) return;
     const type = data.type === 'image' ? 'image' : 'text';
+    const dm = parseDm(channelId);
+    let room = null;
+    if (dm) {
+      if (!dm.includes(user.id) || !db.users.some((u) => dm.includes(u.id) && u.id !== user.id)) return;
+    } else {
+      const found = findChannel(channelId);
+      if (!found || found.channel.type !== 'text' || !found.server.members.includes(user.id)) return;
+      const perms = getPerms(found.server, user.id);
+      if (!perms.sendMessages) return;
+      if (type === 'image' && !perms.attachFiles) return;
+      room = 'server:' + found.server.id;
+    }
     const msg = { id: newId(), channel: channelId, from: user.id, type, ts: Date.now() };
     if (type === 'text') {
       msg.text = String(data.text || '').slice(0, 4000);
@@ -448,14 +676,67 @@ io.on('connection', (socket) => {
       db.messages[channelId] = db.messages[channelId].slice(-MAX_MESSAGES_PER_CHANNEL);
     }
     save();
-    io.to('server:' + found.server.id).emit('chat', msg);
+    if (room) io.to(room).emit('chat', msg);
+    else emitToDm(dm, 'chat', msg);
+  });
+
+  // Borrar mensaje: el propio siempre; los de otros con permiso
+  socket.on('chat-delete', (data) => {
+    const channelId = String((data && data.channel) || '');
+    const id = String((data && data.id) || '');
+    const list = db.messages[channelId];
+    if (!list) return;
+    const msg = list.find((m) => m.id === id);
+    if (!msg) return;
+    const dm = parseDm(channelId);
+    let allowed = false;
+    let room = null;
+    if (dm) {
+      allowed = dm.includes(user.id) && msg.from === user.id;
+    } else {
+      const found = findChannel(channelId);
+      if (!found || !found.server.members.includes(user.id)) return;
+      allowed = msg.from === user.id || getPerms(found.server, user.id).manageMessages;
+      room = 'server:' + found.server.id;
+    }
+    if (!allowed) return;
+    db.messages[channelId] = list.filter((m) => m.id !== id);
+    save();
+    const payload = { channel: channelId, id };
+    if (room) io.to(room).emit('chat-deleted', payload);
+    else emitToDm(dm, 'chat-deleted', payload);
   });
 
   socket.on('typing', (data) => {
     const channelId = String((data && data.channel) || '');
+    const dm = parseDm(channelId);
+    if (dm) {
+      if (!dm.includes(user.id)) return;
+      emitToDm(dm.filter((id) => id !== user.id), 'typing', { userId: user.id, channel: channelId });
+      return;
+    }
     const found = findChannel(channelId);
     if (!found || !found.server.members.includes(user.id)) return;
     socket.to('server:' + found.server.id).emit('typing', { userId: user.id, channel: channelId });
+  });
+
+  // ----- Moderación de voz: silenciar o sacar a alguien -----
+  socket.on('voice-mod', (data) => {
+    const channelId = String((data && data.channel) || '');
+    const targetId = String((data && data.userId) || '');
+    const found = findChannel(channelId);
+    if (!found || !found.server.members.includes(user.id)) return;
+    const perms = getPerms(found.server, user.id);
+    const room = voice.get(channelId);
+    if (!room || !room.has(targetId)) return;
+    const targetSocket = io.sockets.sockets.get(room.get(targetId));
+    if (data.action === 'mute' && perms.muteMembers && targetSocket) {
+      targetSocket.emit('force-mute', { by: user.name });
+    }
+    if (data.action === 'kick' && perms.disconnectMembers) {
+      if (targetSocket) targetSocket.emit('force-voice-leave', { by: user.name });
+      removeFromVoice(targetId, channelId);
+    }
   });
 
   // ----- Voz (grupal, por canal) -----

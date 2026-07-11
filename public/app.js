@@ -326,9 +326,22 @@ function findMyChannel(channelId) {
   return null;
 }
 
+/* ---- Mensajes directos (MD) ---- */
+const isDm = (id) => typeof id === 'string' && id.startsWith('dm-');
+const dmIdWith = (uid) => 'dm-' + [state.me.id, uid].sort().join('-');
+const dmPeerId = (chId) => chId.slice(3).split('-').find((x) => x !== state.me.id);
+
+// Mis permisos en el canal abierto (en MD se puede todo lo básico)
+function currentPerms() {
+  if (!state.currentChannelId) return null;
+  if (isDm(state.currentChannelId)) return { sendMessages: true, attachFiles: true, manageMessages: false };
+  const f = findMyChannel(state.currentChannelId);
+  return f ? (f.server.perms || {}) : null;
+}
+
 function pickInitialChannel() {
   const saved = localStorage.getItem('lastChannel');
-  if (saved && findMyChannel(saved)) {
+  if (saved && (isDm(saved) || findMyChannel(saved))) {
     setCurrentChannel(saved, false);
     return;
   }
@@ -341,11 +354,16 @@ function pickInitialChannel() {
 }
 
 function setCurrentChannel(channelId, load = true) {
-  const found = findMyChannel(channelId);
-  if (!found) return;
-  state.currentChannelId = channelId;
-  state.currentServerId = found.server.id;
-  state.openServerId = found.server.id;
+  if (isDm(channelId)) {
+    state.currentChannelId = channelId;
+    state.currentServerId = null;
+  } else {
+    const found = findMyChannel(channelId);
+    if (!found) return;
+    state.currentChannelId = channelId;
+    state.currentServerId = found.server.id;
+    state.openServerId = found.server.id;
+  }
   localStorage.setItem('lastChannel', channelId);
   if (load) {
     loadMessages(channelId);
@@ -356,12 +374,21 @@ function setCurrentChannel(channelId, load = true) {
 function renderAll() {
   renderTopbar();
   renderChatEmptyState();
+  renderInputPerms();
+  renderDmList();
   renderMyServers();
   renderVoiceLobby();
   renderVoiceBanner();
 }
 
 function renderTopbar() {
+  if (state.currentChannelId && isDm(state.currentChannelId)) {
+    const peer = getUser(dmPeerId(state.currentChannelId));
+    $('topbarTitle').textContent = peer.name;
+    $('topbarSub').textContent = 'Mensaje directo';
+    setAvatar($('topbarIcon'), peer);
+    return;
+  }
   const found = state.currentChannelId ? findMyChannel(state.currentChannelId) : null;
   if (found) {
     const t = $('topbarTitle');
@@ -377,6 +404,17 @@ function renderTopbar() {
   }
 }
 
+// Bloquea escribir/adjuntar si el rol no lo permite
+function renderInputPerms() {
+  const p = currentPerms();
+  const canSend = !!(p && p.sendMessages);
+  const canAttach = !!(p && p.attachFiles);
+  $('msgInput').disabled = !canSend;
+  $('msgInput').placeholder = canSend ? 'Escribe un mensaje…' : 'No tienes permiso para escribir aquí';
+  $('btnSend').style.opacity = canSend ? '' : '.35';
+  $('btnPhoto').style.display = canAttach ? '' : 'none';
+}
+
 function renderChatEmptyState() {
   const empty = !state.currentChannelId;
   $('noChannel').classList.toggle('hidden', !empty);
@@ -385,9 +423,13 @@ function renderChatEmptyState() {
 }
 
 function setPeerStatusOnline() {
-  // pequeño indicador: cuántos están en línea (además de mí)
-  const others = state.lastOnline.filter((id) => id !== state.me.id).length;
   const sub = $('topbarSub');
+  if (state.currentChannelId && isDm(state.currentChannelId)) {
+    const online = state.lastOnline.includes(dmPeerId(state.currentChannelId));
+    sub.textContent = online ? 'en línea 🟢' : 'desconectado';
+    return;
+  }
+  const others = state.lastOnline.filter((id) => id !== state.me.id).length;
   const found = state.currentChannelId ? findMyChannel(state.currentChannelId) : null;
   if (found) {
     sub.textContent = found.server.name + (others > 0 ? ` · ${others} en línea` : '');
@@ -413,6 +455,7 @@ function switchView(v) {
     updateBadge();
     scrollMessages(true);
   }
+  if (v === 'servers') refreshAllServers();
 }
 function updateBadge() {
   const b = $('chatBadge');
@@ -450,7 +493,27 @@ function connectSocket() {
   });
 
   s.on('server-list-updated', () => {
-    if (!$('searchResults').classList.contains('hidden')) doSearch();
+    if (state.view === 'servers') refreshAllServers();
+  });
+
+  s.on('force-mute', ({ by }) => {
+    state.voice.micOn = false;
+    if (state.voice.micStream) state.voice.micStream.getAudioTracks().forEach((t) => (t.enabled = false));
+    $('btnMic').classList.remove('active');
+    $('btnMic').classList.add('off');
+    sendVoiceStatus();
+    toast(`🔇 ${by || 'Un moderador'} te silenció`);
+  });
+
+  s.on('force-voice-leave', ({ by }) => {
+    if (state.voice.channel) leaveVoice();
+    toast(`⛔ ${by || 'Un moderador'} te sacó de la sala de voz`);
+  });
+
+  s.on('chat-deleted', ({ channel, id }) => {
+    if (channel !== state.currentChannelId) return;
+    const row = document.querySelector(`.dmsg[data-mid="${id}"]`);
+    if (row) row.remove();
   });
 
   s.on('chat', (msg) => {
@@ -583,21 +646,36 @@ async function loadMessages(channelId) {
   lastDay = null;
   lastAuthor = null;
   lastTs = 0;
-  const found = findMyChannel(channelId);
-  if (found) {
-    const intro = document.createElement('div');
-    intro.className = 'channel-intro';
+  const intro = document.createElement('div');
+  intro.className = 'channel-intro';
+  if (isDm(channelId)) {
+    const peer = getUser(dmPeerId(channelId));
     const icon = document.createElement('div');
-    icon.className = 'ci-icon';
-    icon.textContent = '#';
+    icon.className = 'avatar big-avatar';
+    setAvatar(icon, peer);
     intro.appendChild(icon);
     const h = document.createElement('h2');
-    h.textContent = '¡Bienvenido a #' + found.channel.name + '!';
+    h.textContent = peer.name;
     intro.appendChild(h);
     const p = document.createElement('p');
-    p.textContent = `Este es el comienzo del canal #${found.channel.name} de ${found.server.name}.`;
+    p.textContent = 'Este es el comienzo de sus mensajes directos. Solo ustedes dos los ven. 💌';
     intro.appendChild(p);
     list.appendChild(intro);
+  } else {
+    const found = findMyChannel(channelId);
+    if (found) {
+      const icon = document.createElement('div');
+      icon.className = 'ci-icon';
+      icon.textContent = '#';
+      intro.appendChild(icon);
+      const h = document.createElement('h2');
+      h.textContent = '¡Bienvenido a #' + found.channel.name + '!';
+      intro.appendChild(h);
+      const p = document.createElement('p');
+      p.textContent = `Este es el comienzo del canal #${found.channel.name} de ${found.server.name}.`;
+      intro.appendChild(p);
+      list.appendChild(intro);
+    }
   }
   try {
     const { messages } = await api('/api/channels/' + channelId + '/messages');
@@ -625,6 +703,7 @@ function appendMessage(msg) {
 
   const row = document.createElement('div');
   row.className = 'dmsg' + (grouped ? ' grouped' : ' first');
+  row.dataset.mid = msg.id;
 
   const content = document.createElement('div');
   content.className = 'dcontent';
@@ -639,7 +718,7 @@ function appendMessage(msg) {
     const name = document.createElement('span');
     name.className = 'dname';
     name.textContent = author.name;
-    name.style.color = colorFor(author.id);
+    name.style.color = roleColorFor(author.id);
     header.appendChild(name);
     const time = document.createElement('span');
     time.className = 'dtime';
@@ -665,7 +744,38 @@ function appendMessage(msg) {
     content.appendChild(text);
   }
   row.appendChild(content);
+
+  // borrar: los míos siempre, los de otros con permiso "Gestionar mensajes"
+  const p = currentPerms();
+  if (msg.from === state.me.id || (p && p.manageMessages)) {
+    const del = document.createElement('button');
+    del.className = 'msg-del';
+    del.textContent = '🗑';
+    del.title = 'Borrar mensaje';
+    del.addEventListener('click', () => {
+      if (confirm('¿Borrar este mensaje?')) {
+        state.socket.emit('chat-delete', { channel: msg.channel || state.currentChannelId, id: msg.id });
+      }
+    });
+    row.appendChild(del);
+  }
   list.appendChild(row);
+}
+
+// El nombre toma el color del rol más alto (como Discord)
+function roleColorFor(userId) {
+  const chId = state.currentChannelId;
+  if (chId && !isDm(chId)) {
+    const f = findMyChannel(chId);
+    if (f) {
+      const rids = (f.server.memberRoles || {})[userId] || [];
+      for (const rid of rids) {
+        const r = f.server.roles.find((x) => x.id === rid);
+        if (r) return r.color;
+      }
+    }
+  }
+  return colorFor(userId);
 }
 
 function scrollMessages(instant) {
@@ -795,7 +905,8 @@ function serverCard(srv) {
     }
     body.appendChild(item);
   }
-  if (srv.ownerId === state.me.id) {
+  const perms = srv.perms || {};
+  if (perms.manageChannels) {
     const add = document.createElement('button');
     add.className = 'channel-item add';
     add.textContent = '＋ Crear canal';
@@ -804,6 +915,14 @@ function serverCard(srv) {
   }
   const actions = document.createElement('div');
   actions.className = 'server-actions';
+  if (perms.manageServer || perms.manageRoles || perms.manageChannels || perms.kickMembers || perms.banMembers) {
+    const settings = document.createElement('button');
+    settings.className = 'btn-ghost';
+    settings.style.color = 'var(--text)';
+    settings.textContent = '⚙️ Ajustes';
+    settings.addEventListener('click', () => openServerSettings(srv.id));
+    actions.appendChild(settings);
+  }
   const leave = document.createElement('button');
   leave.className = 'btn-ghost';
   leave.textContent = 'Salir del server';
@@ -823,63 +942,109 @@ function serverCard(srv) {
   return card;
 }
 
-/* ---- Buscador de servers ---- */
+/* ---- Mensajes directos (lista de personas) ---- */
 
-let searchTimer = null;
-$('serverSearch').addEventListener('input', () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(doSearch, 300);
-});
-
-async function doSearch() {
-  const q = $('serverSearch').value.trim();
-  const box = $('searchResults');
-  if (!q) {
-    box.classList.add('hidden');
-    box.innerHTML = '';
+function renderDmList() {
+  const wrap = $('dmList');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const others = [...state.users.values()].filter((u) => u.id !== state.me.id);
+  if (others.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'voice-room-desc';
+    p.style.padding = '6px';
+    p.textContent = 'Cuando alguien más se registre, aparecerá aquí para escribirle.';
+    wrap.appendChild(p);
     return;
   }
+  for (const u of others) {
+    const card = document.createElement('div');
+    card.className = 'server-card';
+    const head = document.createElement('button');
+    head.className = 'server-head';
+    const av = document.createElement('div');
+    av.className = 'avatar';
+    av.style.borderRadius = '50%';
+    setAvatar(av, u);
+    head.appendChild(av);
+    const title = document.createElement('div');
+    title.className = 'server-title';
+    title.innerHTML = `<div class="s-name"></div><div class="s-meta"></div>`;
+    title.querySelector('.s-name').textContent = u.name;
+    const online = state.lastOnline.includes(u.id);
+    title.querySelector('.s-meta').textContent = online ? '🟢 en línea' : 'desconectado';
+    head.appendChild(title);
+    const chip = document.createElement('span');
+    chip.className = 'server-chevron';
+    chip.textContent = '💬';
+    head.appendChild(chip);
+    head.addEventListener('click', () => {
+      setCurrentChannel(dmIdWith(u.id));
+      switchView('chat');
+    });
+    card.appendChild(head);
+    wrap.appendChild(card);
+  }
+}
+
+/* ---- Lista de TODOS los servers (con buscador que filtra) ---- */
+
+let searchTimer = null;
+let allServersCache = [];
+$('serverSearch').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(refreshAllServers, 300);
+});
+
+async function refreshAllServers() {
+  const q = $('serverSearch').value.trim();
   try {
-    const { servers } = await api('/api/servers?q=' + encodeURIComponent(q));
-    box.innerHTML = '';
-    box.classList.remove('hidden');
-    if (servers.length === 0) {
-      const p = document.createElement('p');
-      p.className = 'voice-room-desc';
-      p.style.padding = '8px';
-      p.textContent = `No hay ningún server que se llame "${q}". ¡Créalo tú!`;
-      box.appendChild(p);
-      return;
-    }
-    for (const srv of servers) {
-      const card = document.createElement('div');
-      card.className = 'server-card';
-      const head = document.createElement('div');
-      head.className = 'server-head';
-      const icon = document.createElement('div');
-      icon.className = 'avatar';
-      setAvatar(icon, { id: srv.id, name: srv.name, avatar: srv.icon });
-      head.appendChild(icon);
-      const title = document.createElement('div');
-      title.className = 'server-title';
-      title.innerHTML = `<div class="s-name"></div><div class="s-meta"></div>`;
-      title.querySelector('.s-name').textContent = (srv.hasPassword ? '🔒 ' : '') + srv.name;
-      title.querySelector('.s-meta').textContent = `${srv.memberCount} miembro${srv.memberCount === 1 ? '' : 's'}`;
-      head.appendChild(title);
-      const btn = document.createElement('button');
-      btn.className = 'server-join-btn';
-      if (srv.isMember) {
-        btn.textContent = 'Dentro ✓';
-        btn.style.background = 'var(--bg3)';
-      } else {
-        btn.textContent = 'Unirme';
-        btn.addEventListener('click', () => joinServer(srv));
-      }
-      head.appendChild(btn);
-      card.appendChild(head);
-      box.appendChild(card);
-    }
+    const { servers } = await api('/api/servers' + (q ? '?q=' + encodeURIComponent(q) : ''));
+    allServersCache = servers;
+    renderAllServers();
   } catch (_) {}
+}
+
+function renderAllServers() {
+  const box = $('allServers');
+  box.innerHTML = '';
+  if (allServersCache.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'voice-room-desc';
+    p.style.padding = '6px';
+    const q = $('serverSearch').value.trim();
+    p.textContent = q ? `No hay ningún server que se llame "${q}". ¡Créalo tú!` : 'Todavía no hay servers. ¡Crea el primero!';
+    box.appendChild(p);
+    return;
+  }
+  for (const srv of allServersCache) {
+    const card = document.createElement('div');
+    card.className = 'server-card';
+    const head = document.createElement('div');
+    head.className = 'server-head';
+    const icon = document.createElement('div');
+    icon.className = 'avatar';
+    setAvatar(icon, { id: srv.id, name: srv.name, avatar: srv.icon });
+    head.appendChild(icon);
+    const title = document.createElement('div');
+    title.className = 'server-title';
+    title.innerHTML = `<div class="s-name"></div><div class="s-meta"></div>`;
+    title.querySelector('.s-name').textContent = (srv.hasPassword ? '🔒 ' : '') + srv.name;
+    title.querySelector('.s-meta').textContent = `${srv.memberCount} miembro${srv.memberCount === 1 ? '' : 's'}`;
+    head.appendChild(title);
+    const btn = document.createElement('button');
+    btn.className = 'server-join-btn';
+    if (srv.isMember) {
+      btn.textContent = 'Dentro ✓';
+      btn.style.background = 'var(--bg-raised)';
+    } else {
+      btn.textContent = 'Unirme';
+      btn.addEventListener('click', () => joinServer(srv));
+    }
+    head.appendChild(btn);
+    card.appendChild(head);
+    box.appendChild(card);
+  }
 }
 
 async function joinServer(srv, password) {
@@ -893,7 +1058,6 @@ async function joinServer(srv, password) {
     switchView('chat');
     toast(`¡Bienvenido a ${server.name}! 🎉`);
     $('serverSearch').value = '';
-    $('searchResults').classList.add('hidden');
   } catch (e) {
     if (e.code === 'password') {
       // pide la contraseña del server
@@ -949,6 +1113,321 @@ $('btnDoCreateServer').addEventListener('click', async () => {
     toast(`Server "${server.name}" creado 🎉 Ya aparece en el buscador.`);
   } catch (e) {
     $('createServerError').textContent = e.message;
+  }
+});
+
+/* ---- Ajustes del server: roles, miembros y canales ---- */
+
+const PERM_LABELS = {
+  admin: '🛡️ Administrador (todo el poder)',
+  manageServer: 'Gestionar server (nombre, foto, contraseña)',
+  manageChannels: 'Gestionar canales (crear y borrar)',
+  manageRoles: 'Gestionar roles',
+  manageMessages: 'Gestionar mensajes (borrar de otros)',
+  kickMembers: 'Expulsar miembros',
+  banMembers: 'Banear miembros',
+  sendMessages: 'Enviar mensajes',
+  attachFiles: 'Adjuntar fotos',
+  connect: 'Conectarse a canales de voz',
+  speak: 'Hablar (micrófono)',
+  video: 'Cámara y compartir pantalla',
+  muteMembers: 'Silenciar a otros en voz',
+  disconnectMembers: 'Sacar a otros de la sala de voz'
+};
+const ROLE_COLORS = ['#5865f2', '#23a55a', '#f0b232', '#eb459e', '#f23f43', '#3498db', '#9b59b6', '#e67e22'];
+
+function myServer(serverId) {
+  return state.servers.find((s) => s.id === serverId);
+}
+
+function openServerSettings(serverId) {
+  const srv = myServer(serverId);
+  if (!srv) return;
+  const perms = srv.perms || {};
+  $('ssTitle').textContent = '⚙️ ' + srv.name;
+  const body = $('ssBody');
+  body.innerHTML = '';
+
+  const section = (text) => {
+    const h = document.createElement('h3');
+    h.className = 'settings-section';
+    h.textContent = text;
+    body.appendChild(h);
+  };
+
+  // --- Server (nombre, foto, contraseña) ---
+  if (perms.manageServer) {
+    section('Server');
+    const nameInput = document.createElement('input');
+    nameInput.value = srv.name;
+    nameInput.maxLength = 40;
+    body.appendChild(nameInput);
+    const passInput = document.createElement('input');
+    passInput.placeholder = 'Contraseña (vacía = público)';
+    body.appendChild(passInput);
+    const row = document.createElement('div');
+    row.className = 'channel-type-row';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'btn-secondary active';
+    saveBtn.textContent = 'Guardar';
+    saveBtn.addEventListener('click', async () => {
+      try {
+        await api(`/api/servers/${srv.id}`, { method: 'PATCH', body: { name: nameInput.value, password: passInput.value } });
+        await loadServers();
+        renderAll();
+        toast('Server actualizado ✅');
+        openServerSettings(serverId);
+      } catch (e) { toast(e.message); }
+    });
+    row.appendChild(saveBtn);
+    const iconBtn = document.createElement('button');
+    iconBtn.className = 'btn-secondary';
+    iconBtn.textContent = 'Cambiar foto';
+    const iconInput = document.createElement('input');
+    iconInput.type = 'file';
+    iconInput.accept = 'image/*';
+    iconInput.className = 'hidden';
+    iconBtn.addEventListener('click', () => iconInput.click());
+    iconInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      try {
+        const dataUrl = await compressImage(file, 256, 0.9);
+        await api(`/api/servers/${srv.id}`, { method: 'PATCH', body: { iconDataUrl: dataUrl } });
+        await loadServers();
+        renderAll();
+        toast('Foto del server actualizada ✨');
+      } catch (err) { toast('No se pudo cambiar la foto'); }
+    });
+    row.appendChild(iconBtn);
+    body.appendChild(row);
+    body.appendChild(iconInput);
+  }
+
+  // --- Roles ---
+  if (perms.manageRoles) {
+    section('Roles');
+    for (const role of srv.roles) {
+      const rrow = document.createElement('div');
+      rrow.className = 'setting-row';
+      const label = document.createElement('span');
+      label.innerHTML = '<span class="online-dot"></span> ';
+      label.querySelector('.online-dot').style.background = role.color;
+      label.appendChild(document.createTextNode(role.name));
+      rrow.appendChild(label);
+      const btns = document.createElement('span');
+      const edit = document.createElement('button');
+      edit.className = 'btn-small';
+      edit.textContent = 'Editar';
+      edit.addEventListener('click', () => openRoleEditor(serverId, role));
+      btns.appendChild(edit);
+      if (role.id !== 'everyone') {
+        const del = document.createElement('button');
+        del.className = 'btn-ghost';
+        del.textContent = '🗑';
+        del.addEventListener('click', async () => {
+          if (!confirm(`¿Borrar el rol "${role.name}"?`)) return;
+          try {
+            await api(`/api/servers/${srv.id}/roles/${role.id}`, { method: 'DELETE' });
+            await loadServers();
+            openServerSettings(serverId);
+          } catch (e) { toast(e.message); }
+        });
+        btns.appendChild(del);
+      }
+      rrow.appendChild(btns);
+      body.appendChild(rrow);
+    }
+    const addRole = document.createElement('button');
+    addRole.className = 'btn-secondary';
+    addRole.textContent = '＋ Crear rol';
+    addRole.addEventListener('click', () => openRoleEditor(serverId, null));
+    body.appendChild(addRole);
+  }
+
+  // --- Miembros ---
+  section('Miembros');
+  for (const uid of srv.members) {
+    const u = getUser(uid);
+    const mrow = document.createElement('div');
+    mrow.style.cssText = 'display:flex;flex-direction:column;gap:6px;padding:8px 0;border-bottom:1px solid var(--divider)';
+    const top = document.createElement('div');
+    top.style.cssText = 'display:flex;align-items:center;gap:10px';
+    const av = document.createElement('div');
+    av.className = 'avatar';
+    setAvatar(av, u);
+    top.appendChild(av);
+    const nm = document.createElement('span');
+    nm.style.cssText = 'flex:1;font-weight:600';
+    nm.textContent = u.name + (uid === srv.ownerId ? ' 👑' : '');
+    top.appendChild(nm);
+    if (uid !== srv.ownerId && uid !== state.me.id) {
+      if (perms.kickMembers) {
+        const kick = document.createElement('button');
+        kick.className = 'btn-ghost';
+        kick.textContent = '🥾';
+        kick.title = 'Expulsar';
+        kick.addEventListener('click', async () => {
+          if (!confirm(`¿Expulsar a ${u.name}? Podrá volver a unirse.`)) return;
+          try { await api(`/api/servers/${srv.id}/kick`, { body: { userId: uid } }); await loadServers(); openServerSettings(serverId); }
+          catch (e) { toast(e.message); }
+        });
+        top.appendChild(kick);
+      }
+      if (perms.banMembers) {
+        const ban = document.createElement('button');
+        ban.className = 'btn-ghost';
+        ban.textContent = '🔨';
+        ban.title = 'Banear';
+        ban.addEventListener('click', async () => {
+          if (!confirm(`¿Banear a ${u.name}? No podrá volver a entrar.`)) return;
+          try { await api(`/api/servers/${srv.id}/ban`, { body: { userId: uid } }); await loadServers(); openServerSettings(serverId); }
+          catch (e) { toast(e.message); }
+        });
+        top.appendChild(ban);
+      }
+    }
+    mrow.appendChild(top);
+    // chips de roles: tocar para asignar/quitar
+    if (perms.manageRoles && srv.roles.some((r) => r.id !== 'everyone')) {
+      const chips = document.createElement('div');
+      chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px';
+      for (const role of srv.roles) {
+        if (role.id === 'everyone') continue;
+        const has = ((srv.memberRoles || {})[uid] || []).includes(role.id);
+        const chip = document.createElement('button');
+        chip.textContent = role.name;
+        chip.style.cssText = `font-size:12px;font-weight:600;padding:5px 10px;border-radius:12px;border:1.5px solid ${role.color};` +
+          (has ? `background:${role.color};color:#fff` : `color:${role.color};background:transparent;opacity:.6`);
+        chip.addEventListener('click', async () => {
+          try {
+            await api(`/api/servers/${srv.id}/members/${uid}/roles`, { body: { roleId: role.id, add: !has } });
+            await loadServers();
+            openServerSettings(serverId);
+          } catch (e) { toast(e.message); }
+        });
+        chips.appendChild(chip);
+      }
+      mrow.appendChild(chips);
+    }
+    body.appendChild(mrow);
+  }
+
+  // --- Canales ---
+  if (perms.manageChannels) {
+    section('Canales');
+    for (const ch of srv.channels) {
+      const crow = document.createElement('div');
+      crow.className = 'setting-row';
+      const label = document.createElement('span');
+      label.textContent = (ch.type === 'voice' ? '🔊 ' : '# ') + ch.name;
+      crow.appendChild(label);
+      const del = document.createElement('button');
+      del.className = 'btn-ghost';
+      del.textContent = '🗑';
+      del.addEventListener('click', async () => {
+        if (!confirm(`¿Borrar el canal "${ch.name}" y todos sus mensajes?`)) return;
+        try {
+          await api(`/api/servers/${srv.id}/channels/${ch.id}`, { method: 'DELETE' });
+          await loadServers();
+          if (!findMyChannel(state.currentChannelId) && !isDm(state.currentChannelId)) pickInitialChannel();
+          renderAll();
+          openServerSettings(serverId);
+        } catch (e) { toast(e.message); }
+      });
+      crow.appendChild(del);
+      body.appendChild(crow);
+    }
+  }
+
+  $('serverSettingsOverlay').classList.remove('hidden');
+}
+$('btnCloseServerSettings').addEventListener('click', () => $('serverSettingsOverlay').classList.add('hidden'));
+
+/* ---- Editor de rol ---- */
+
+let roleEditCtx = null; // { serverId, roleId|null, color, perms }
+function openRoleEditor(serverId, role) {
+  const srv = myServer(serverId);
+  if (!srv) return;
+  roleEditCtx = {
+    serverId,
+    roleId: role ? role.id : null,
+    color: role ? role.color : ROLE_COLORS[0],
+    perms: role ? { ...role.perms } : {}
+  };
+  $('reTitle').textContent = role ? 'Editar rol: ' + role.name : 'Crear rol';
+  $('reError').textContent = '';
+  const body = $('reBody');
+  body.innerHTML = '';
+
+  const isEveryone = role && role.id === 'everyone';
+  const nameInput = document.createElement('input');
+  nameInput.id = 'reName';
+  nameInput.maxLength = 30;
+  nameInput.placeholder = 'Nombre del rol';
+  nameInput.value = role ? role.name : '';
+  nameInput.disabled = isEveryone;
+  body.appendChild(nameInput);
+
+  if (!isEveryone) {
+    const palette = document.createElement('div');
+    palette.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;justify-content:center;padding:6px 0';
+    for (const c of ROLE_COLORS) {
+      const b = document.createElement('button');
+      b.style.cssText = `width:34px;height:34px;border-radius:50%;background:${c};border:3px solid ${c === roleEditCtx.color ? '#fff' : 'transparent'}`;
+      b.addEventListener('click', () => {
+        roleEditCtx.color = c;
+        palette.querySelectorAll('button').forEach((x, i) => { x.style.borderColor = ROLE_COLORS[i] === c ? '#fff' : 'transparent'; });
+      });
+      palette.appendChild(b);
+    }
+    body.appendChild(palette);
+  }
+
+  const h = document.createElement('h3');
+  h.className = 'settings-section';
+  h.textContent = 'Permisos';
+  body.appendChild(h);
+  for (const [key, label] of Object.entries(PERM_LABELS)) {
+    const row = document.createElement('div');
+    row.className = 'setting-row';
+    const span = document.createElement('span');
+    span.textContent = label;
+    span.style.fontSize = '14px';
+    row.appendChild(span);
+    const sw = document.createElement('button');
+    sw.className = 'switch' + (roleEditCtx.perms[key] ? ' on' : '');
+    sw.addEventListener('click', () => {
+      roleEditCtx.perms[key] = !roleEditCtx.perms[key];
+      sw.classList.toggle('on', roleEditCtx.perms[key]);
+    });
+    row.appendChild(sw);
+    body.appendChild(row);
+  }
+  $('roleEditOverlay').classList.remove('hidden');
+}
+
+$('btnCloseRoleEdit').addEventListener('click', () => $('roleEditOverlay').classList.add('hidden'));
+$('btnSaveRole').addEventListener('click', async () => {
+  if (!roleEditCtx) return;
+  const bodyData = {
+    name: $('reName') ? $('reName').value : '',
+    color: roleEditCtx.color,
+    perms: roleEditCtx.perms
+  };
+  try {
+    if (roleEditCtx.roleId) {
+      await api(`/api/servers/${roleEditCtx.serverId}/roles/${roleEditCtx.roleId}`, { method: 'PATCH', body: bodyData });
+    } else {
+      await api(`/api/servers/${roleEditCtx.serverId}/roles`, { body: bodyData });
+    }
+    await loadServers();
+    $('roleEditOverlay').classList.add('hidden');
+    openServerSettings(roleEditCtx.serverId);
+  } catch (e) {
+    $('reError').textContent = e.message;
   }
 });
 
@@ -1050,8 +1529,20 @@ function renderVoiceBanner() {
 
 $('btnLeaveVoice').addEventListener('click', () => leaveVoice());
 
+// Mis permisos en el canal de voz actual (en llamadas directas, todos)
+function voicePermsNow(channelId) {
+  const ch = channelId || state.voice.channel;
+  if (!ch || ch === CALL_CHANNEL) {
+    return { connect: true, speak: true, video: true, muteMembers: false, disconnectMembers: false };
+  }
+  const f = findMyChannel(ch);
+  return f ? (f.server.perms || {}) : {};
+}
+
 async function joinVoice(channelId, withVideo) {
   if (state.voice.channel === channelId) { switchView('voice'); return; }
+  const vp = voicePermsNow(channelId);
+  if (!vp.connect) { toast('No tienes permiso para entrar a este canal de voz'); return; }
   if (state.voice.channel) leaveVoice(true);
   try {
     state.voice.micStream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
@@ -1059,10 +1550,14 @@ async function joinVoice(channelId, withVideo) {
     toast('Necesito permiso del micrófono 🎙️');
     return;
   }
+  state.voice.micOn = !!vp.speak;
+  if (!vp.speak) {
+    state.voice.micStream.getAudioTracks().forEach((t) => (t.enabled = false));
+    toast('En este canal no tienes permiso para hablar 🔇');
+  }
   state.voice.channel = channelId;
-  state.voice.micOn = true;
-  $('btnMic').classList.add('active');
-  $('btnMic').classList.remove('off');
+  $('btnMic').classList.toggle('active', state.voice.micOn);
+  $('btnMic').classList.toggle('off', !state.voice.micOn);
   switchView('voice');
   $('voiceLobby').classList.add('hidden');
   $('voiceRoom').classList.remove('hidden');
@@ -1145,11 +1640,14 @@ function createPeer(member) {
     }
   }, 3000);
 
-  // audio (mi micro) + video (cámara o pantalla, se cambia sin renegociar)
+  // 3 canales fijos: micro + video (cámara/pantalla) + audio de la transmisión.
+  // Se cambian con replaceTrack, sin renegociar.
   pc.addTransceiver(state.voice.micStream.getAudioTracks()[0], { direction: 'sendrecv' });
   peer.videoTx = pc.addTransceiver('video', { direction: 'sendrecv' });
+  peer.streamAudioTx = pc.addTransceiver('audio', { direction: 'sendrecv' });
   const sendTrack = state.voice.screenTrack || state.voice.camTrack;
   if (sendTrack) peer.videoTx.sender.replaceTrack(sendTrack);
+  if (state.voice.screenAudioTrack) peer.streamAudioTx.sender.replaceTrack(state.voice.screenAudioTrack);
 
   pc.onnegotiationneeded = async () => {
     try {
@@ -1162,7 +1660,9 @@ function createPeer(member) {
   pc.onicecandidate = ({ candidate }) => sendRtc(peer, { candidate });
   pc.ontrack = ({ track }) => {
     if (track.kind === 'audio') {
-      attachPeerAudio(peer, track);
+      // el primer audio es la voz; el segundo, el sonido de su transmisión
+      if (!peer.audioEl) attachPeerAudio(peer, track);
+      else attachStreamAudio(peer, track);
     } else {
       peer.tile.video.srcObject = new MediaStream([track]);
       const show = (on) => peer.tile.root.classList.toggle('hasvideo', on);
@@ -1230,11 +1730,52 @@ function applyPeerVolume(peer, forceSimple) {
   }
 }
 
+// Audio de la transmisión (pantalla compartida con sonido), con su propio volumen
+function attachStreamAudio(peer, track) {
+  const stream = new MediaStream([track]);
+  peer.streamAudioEl = document.createElement('audio');
+  peer.streamAudioEl.autoplay = true;
+  peer.streamAudioEl.srcObject = stream;
+  $('remoteAudios').appendChild(peer.streamAudioEl);
+  applyStreamVolume(peer, document.hidden);
+  peer.streamAudioEl.play().catch(() => {});
+}
+
+function applyStreamVolume(peer, forceSimple) {
+  if (!peer.streamAudioEl) return;
+  const v = getVolume('stream:' + peer.id);
+  const wantBoost = v > 1.001 && !forceSimple;
+  if (!wantBoost) {
+    if (peer.streamGain) {
+      try { peer.streamSrc.disconnect(); peer.streamGain.disconnect(); } catch (_) {}
+      peer.streamGain = null;
+      peer.streamSrc = null;
+    }
+    peer.streamAudioEl.muted = false;
+    peer.streamAudioEl.volume = Math.max(0, Math.min(v, 1));
+    return;
+  }
+  try {
+    const c = ctx();
+    if (!peer.streamGain) {
+      peer.streamSrc = c.createMediaStreamSource(peer.streamAudioEl.srcObject);
+      peer.streamGain = c.createGain();
+      peer.streamSrc.connect(peer.streamGain).connect(c.destination);
+    }
+    peer.streamGain.gain.value = v;
+    peer.streamAudioEl.muted = true;
+  } catch (_) {
+    peer.streamAudioEl.muted = false;
+    peer.streamAudioEl.volume = 1;
+  }
+}
+
 // Al salir de la app: modo seguro (el reproductor sigue sonando de fondo).
 // Al volver: se restaura el volumen elegido y se despierta WebAudio.
 document.addEventListener('visibilitychange', () => {
   for (const peer of state.voice.peers.values()) {
     applyPeerVolume(peer, document.hidden);
+    applyStreamVolume(peer, document.hidden);
   }
   if (!document.hidden && audioCtx && audioCtx.state === 'suspended') {
     audioCtx.resume().catch(() => {});
@@ -1269,7 +1810,9 @@ function removePeer(peerId) {
   peer.pc.ontrack = null;
   peer.pc.close();
   try { if (peer.srcNode) peer.srcNode.disconnect(); if (peer.gain) peer.gain.disconnect(); } catch (_) {}
+  try { if (peer.streamSrc) peer.streamSrc.disconnect(); if (peer.streamGain) peer.streamGain.disconnect(); } catch (_) {}
   if (peer.audioEl) peer.audioEl.remove();
+  if (peer.streamAudioEl) peer.streamAudioEl.remove();
   if (peer.tile) {
     if (peer.tile.root.classList.contains('expanded')) $('tiles').classList.remove('has-expanded');
     peer.tile.root.remove();
@@ -1366,6 +1909,7 @@ function sendVoiceStatus() {
 /* ---- Controles ---- */
 
 $('btnMic').addEventListener('click', () => {
+  if (!state.voice.micOn && !voicePermsNow().speak) { toast('No tienes permiso para hablar aquí 🔇'); return; }
   state.voice.micOn = !state.voice.micOn;
   if (state.voice.micStream) state.voice.micStream.getAudioTracks().forEach((t) => (t.enabled = state.voice.micOn));
   $('btnMic').classList.toggle('active', state.voice.micOn);
@@ -1373,7 +1917,10 @@ $('btnMic').addEventListener('click', () => {
   sendVoiceStatus();
 });
 
-$('btnCam').addEventListener('click', () => toggleCam(!state.voice.camTrack));
+$('btnCam').addEventListener('click', () => {
+  if (!state.voice.camTrack && !voicePermsNow().video) { toast('No tienes permiso de cámara aquí 📷'); return; }
+  toggleCam(!state.voice.camTrack);
+});
 
 function replaceVideoEverywhere(track) {
   for (const peer of state.voice.peers.values()) {
@@ -1411,15 +1958,23 @@ function stopCam() {
 
 $('btnScreen').addEventListener('click', async () => {
   if (state.voice.screenTrack) { stopScreenAndRestore(); return; }
+  if (!voicePermsNow().video) { toast('No tienes permiso para transmitir aquí 🖥️'); return; }
   try {
-    const stream = await navigator.mediaDevices.getDisplayMedia({ video: screenConstraints(), audio: false });
+    // audio: true → en PC puedes marcar "compartir audio" y se oye tu transmisión
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: screenConstraints(), audio: true });
     state.voice.screenTrack = stream.getVideoTracks()[0];
+    state.voice.screenAudioTrack = stream.getAudioTracks()[0] || null;
   } catch (e) {
     return; // canceló
   }
   stopCam();
   updateSelfPreview();
   replaceVideoEverywhere(state.voice.screenTrack);
+  if (state.voice.screenAudioTrack) {
+    for (const peer of state.voice.peers.values()) {
+      if (peer.streamAudioTx) peer.streamAudioTx.sender.replaceTrack(state.voice.screenAudioTrack);
+    }
+  }
   $('btnScreen').classList.add('active');
   state.voice.screenTrack.onended = () => stopScreenAndRestore();
   sendVoiceStatus();
@@ -1427,12 +1982,16 @@ $('btnScreen').addEventListener('click', async () => {
 
 function stopScreen() {
   if (state.voice.screenTrack) { state.voice.screenTrack.onended = null; state.voice.screenTrack.stop(); state.voice.screenTrack = null; }
+  if (state.voice.screenAudioTrack) { state.voice.screenAudioTrack.stop(); state.voice.screenAudioTrack = null; }
   $('btnScreen').classList.remove('active');
 }
 
 function stopScreenAndRestore() {
   stopScreen();
   replaceVideoEverywhere(null);
+  for (const peer of state.voice.peers.values()) {
+    if (peer.streamAudioTx) peer.streamAudioTx.sender.replaceTrack(null);
+  }
   updateSelfPreview();
   sendVoiceStatus();
 }
@@ -1456,14 +2015,22 @@ function updateSelfPreview() {
   }
 }
 
-/* ---- Volumen por persona ---- */
+/* ---- Volumen por persona (voz y transmisión) + moderación ---- */
 let volumeUserId = null;
 function openVolume(member) {
   volumeUserId = member.id;
-  $('volumeTitle').textContent = '🔊 Volumen de ' + member.name;
+  $('volumeTitle').textContent = '🔊 ' + member.name;
   const v = Math.round(getVolume(member.id) * 100);
   $('volumeSlider').value = v;
   $('volumeValue').textContent = v + '%';
+  const sv = Math.round(getVolume('stream:' + member.id) * 100);
+  $('streamVolSlider').value = sv;
+  $('streamVolValue').textContent = sv + '%';
+  const vp = voicePermsNow();
+  const canMod = vp.muteMembers || vp.disconnectMembers;
+  $('volModRow').classList.toggle('hidden', !canMod);
+  $('btnModMute').style.display = vp.muteMembers ? '' : 'none';
+  $('btnModKick').style.display = vp.disconnectMembers ? '' : 'none';
   $('volumeOverlay').classList.remove('hidden');
 }
 $('volumeSlider').addEventListener('input', () => {
@@ -1471,10 +2038,40 @@ $('volumeSlider').addEventListener('input', () => {
   $('volumeValue').textContent = v + '%';
   if (volumeUserId) setVolume(volumeUserId, v / 100);
 });
+$('streamVolSlider').addEventListener('input', () => {
+  const v = +$('streamVolSlider').value;
+  $('streamVolValue').textContent = v + '%';
+  if (volumeUserId) {
+    volumes['stream:' + volumeUserId] = v / 100;
+    localStorage.setItem('volumes', JSON.stringify(volumes));
+    const peer = state.voice.peers.get(volumeUserId);
+    if (peer) applyStreamVolume(peer, document.hidden);
+  }
+});
 $('btnVolumeReset').addEventListener('click', () => {
   $('volumeSlider').value = 100;
   $('volumeValue').textContent = '100%';
-  if (volumeUserId) setVolume(volumeUserId, 1);
+  $('streamVolSlider').value = 100;
+  $('streamVolValue').textContent = '100%';
+  if (volumeUserId) {
+    setVolume(volumeUserId, 1);
+    volumes['stream:' + volumeUserId] = 1;
+    localStorage.setItem('volumes', JSON.stringify(volumes));
+    const peer = state.voice.peers.get(volumeUserId);
+    if (peer) applyStreamVolume(peer, document.hidden);
+  }
+});
+$('btnModMute').addEventListener('click', () => {
+  if (volumeUserId && state.voice.channel) {
+    state.socket.emit('voice-mod', { channel: state.voice.channel, userId: volumeUserId, action: 'mute' });
+    toast('Silenciado 🔇');
+  }
+});
+$('btnModKick').addEventListener('click', () => {
+  if (volumeUserId && state.voice.channel) {
+    state.socket.emit('voice-mod', { channel: state.voice.channel, userId: volumeUserId, action: 'kick' });
+    $('volumeOverlay').classList.add('hidden');
+  }
 });
 $('btnCloseVolume').addEventListener('click', () => $('volumeOverlay').classList.add('hidden'));
 $('volumeOverlay').addEventListener('click', (e) => { if (e.target.id === 'volumeOverlay') $('volumeOverlay').classList.add('hidden'); });
