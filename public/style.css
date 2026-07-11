@@ -165,11 +165,44 @@ select {
 .dimg { margin: 3px 0 2px; }
 .dimg img { max-width: min(260px, 70vw); max-height: 300px; border-radius: 8px; display: block; }
 
-.msg-del {
-  margin-left: auto; align-self: flex-start; opacity: .22; font-size: 13px;
-  padding: 2px 6px; flex-shrink: 0; border-radius: 6px;
+.msg-acts { margin-left: auto; align-self: flex-start; display: flex; gap: 2px; flex-shrink: 0; }
+.msg-acts button { opacity: .22; font-size: 13px; padding: 2px 5px; border-radius: 6px; }
+.msg-acts button:active { opacity: 1; background: var(--bg-raised); }
+
+/* Cita de respuesta encima del mensaje */
+.dreply {
+  display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted);
+  border-left: 3px solid var(--blurple); padding: 2px 8px; margin-bottom: 2px;
+  background: rgba(88,101,242,.07); border-radius: 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
 }
-.msg-del:active { opacity: 1; background: var(--bg-raised); }
+.dreply b { color: var(--text); font-weight: 600; }
+
+/* Chips de reacciones */
+.dreacts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.dreacts button {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 13px;
+  background: var(--bg-panel); border: 1px solid var(--divider); border-radius: 10px;
+  padding: 2px 8px; color: var(--muted);
+}
+.dreacts button.mine { border-color: var(--blurple); background: rgba(88,101,242,.18); color: var(--text-strong); }
+
+/* Barra de "Respondiendo a…" */
+.reply-bar {
+  display: flex; align-items: center; gap: 8px; padding: 7px 14px;
+  background: var(--bg-panel); border-top: 1px solid var(--divider);
+  font-size: 13px; color: var(--muted);
+}
+.reply-bar span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.reply-bar button { color: var(--muted); font-size: 15px; padding: 2px 8px; }
+
+/* Selector de emojis para reaccionar */
+.react-card {
+  background: var(--bg-panel); border-radius: 14px; padding: 14px;
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+}
+.react-card button { font-size: 28px; padding: 10px 14px; border-radius: 10px; }
+.react-card button:active { background: var(--bg-raised); }
 
 .typing { padding: 2px 16px 6px; color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 6px; }
 .tdots { display: inline-flex; gap: 3px; }

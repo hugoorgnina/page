@@ -670,6 +670,16 @@ io.on('connection', (socket) => {
       msg.url = String(data.url || '');
       if (!msg.url.startsWith('/uploads/')) return;
     }
+    // respuesta/cita a otro mensaje del mismo canal
+    if (data.replyTo) {
+      const orig = (db.messages[channelId] || []).find((m) => m.id === String(data.replyTo));
+      if (orig) {
+        msg.replyTo = {
+          from: orig.from,
+          text: orig.type === 'image' ? '📷 Foto' : String(orig.text || '').slice(0, 90)
+        };
+      }
+    }
     if (!db.messages[channelId]) db.messages[channelId] = [];
     db.messages[channelId].push(msg);
     if (db.messages[channelId].length > MAX_MESSAGES_PER_CHANNEL) {
@@ -678,6 +688,38 @@ io.on('connection', (socket) => {
     save();
     if (room) io.to(room).emit('chat', msg);
     else emitToDm(dm, 'chat', msg);
+  });
+
+  // Reacciones con emoji (toca para poner, toca otra vez para quitar)
+  const REACT_EMOJIS = ['❤️', '😂', '😮', '😢', '👍', '🔥', '💜', '😍'];
+  socket.on('react', (data) => {
+    const channelId = String((data && data.channel) || '');
+    const id = String((data && data.id) || '');
+    const emoji = String((data && data.emoji) || '');
+    if (!REACT_EMOJIS.includes(emoji)) return;
+    const list = db.messages[channelId];
+    if (!list) return;
+    const msg = list.find((m) => m.id === id);
+    if (!msg) return;
+    const dm = parseDm(channelId);
+    let room = null;
+    if (dm) {
+      if (!dm.includes(user.id)) return;
+    } else {
+      const found = findChannel(channelId);
+      if (!found || !found.server.members.includes(user.id)) return;
+      room = 'server:' + found.server.id;
+    }
+    if (!msg.reactions) msg.reactions = {};
+    const set = new Set(msg.reactions[emoji] || []);
+    if (set.has(user.id)) set.delete(user.id);
+    else set.add(user.id);
+    if (set.size) msg.reactions[emoji] = [...set];
+    else delete msg.reactions[emoji];
+    save();
+    const payload = { channel: channelId, id, reactions: msg.reactions };
+    if (room) io.to(room).emit('reaction', payload);
+    else emitToDm(dm, 'reaction', payload);
   });
 
   // Borrar mensaje: el propio siempre; los de otros con permiso

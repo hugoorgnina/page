@@ -367,6 +367,7 @@ function setCurrentChannel(channelId, load = true) {
     state.openServerId = found.server.id;
   }
   localStorage.setItem('lastChannel', channelId);
+  cancelReply();
   if (load) {
     loadMessages(channelId);
     renderAll();
@@ -526,6 +527,7 @@ function connectSocket() {
     if (state.voice.micStream) state.voice.micStream.getAudioTracks().forEach((t) => (t.enabled = false));
     $('btnMic').classList.remove('active');
     $('btnMic').classList.add('off');
+    if (state.voice.selfTile) state.voice.selfTile.root.classList.add('muted');
     sendVoiceStatus();
     toast(`🔇 ${by || 'Un moderador'} te silenció`);
   });
@@ -539,6 +541,12 @@ function connectSocket() {
     if (channel !== state.currentChannelId) return;
     const row = document.querySelector(`.dmsg[data-mid="${id}"]`);
     if (row) row.remove();
+  });
+
+  s.on('reaction', ({ channel, id, reactions }) => {
+    if (channel !== state.currentChannelId) return;
+    const row = document.querySelector(`.dmsg[data-mid="${id}"]`);
+    if (row) renderReactionChips(row.querySelector('.dreacts'), channel, id, reactions);
   });
 
   s.on('chat', (msg) => {
@@ -574,6 +582,19 @@ function connectSocket() {
   });
 
   s.on('voice-state', ({ channel, members }) => {
+    // sonido de "entró/salió alguien" en mi sala (como Discord)
+    if (channel === state.voice.channel && state.voice.channel) {
+      const before = new Set((state.voiceStates[channel] || []).map((m) => m.id));
+      const now = new Set(members.map((m) => m.id));
+      if (before.size) {
+        for (const m of members) {
+          if (!before.has(m.id) && m.id !== state.me.id) { beep(520, 0.1, 0, 0.2); beep(784, 0.14, 0.1, 0.2); }
+        }
+      }
+      for (const id of before) {
+        if (!now.has(id) && id !== state.me.id) { beep(784, 0.1, 0, 0.18); beep(520, 0.14, 0.1, 0.18); }
+      }
+    }
     if (members.length === 0) delete state.voiceStates[channel];
     else state.voiceStates[channel] = members;
     renderVoiceLobby();
@@ -768,13 +789,42 @@ function appendMessage(msg) {
     text.textContent = msg.text;
     content.appendChild(text);
   }
+
+  // cita de respuesta (va encima del texto)
+  if (msg.replyTo) {
+    const quote = document.createElement('div');
+    quote.className = 'dreply';
+    const who = document.createElement('b');
+    who.textContent = '↩ ' + getUser(msg.replyTo.from).name + ': ';
+    quote.appendChild(who);
+    quote.appendChild(document.createTextNode(msg.replyTo.text));
+    content.insertBefore(quote, content.querySelector('.dtext, .dimg'));
+  }
+
+  // chips de reacciones
+  const reacts = document.createElement('div');
+  reacts.className = 'dreacts';
+  content.appendChild(reacts);
+  renderReactionChips(reacts, msg.channel || state.currentChannelId, msg.id, msg.reactions || {});
+
   row.appendChild(content);
 
-  // borrar: los míos siempre, los de otros con permiso "Gestionar mensajes"
+  // acciones: reaccionar, responder y borrar
+  const acts = document.createElement('div');
+  acts.className = 'msg-acts';
+  const reactBtn = document.createElement('button');
+  reactBtn.textContent = '😀';
+  reactBtn.title = 'Reaccionar';
+  reactBtn.addEventListener('click', () => openReactPicker(msg));
+  acts.appendChild(reactBtn);
+  const replyBtn = document.createElement('button');
+  replyBtn.textContent = '↩';
+  replyBtn.title = 'Responder';
+  replyBtn.addEventListener('click', () => startReply(msg));
+  acts.appendChild(replyBtn);
   const p = currentPerms();
   if (msg.from === state.me.id || (p && p.manageMessages)) {
     const del = document.createElement('button');
-    del.className = 'msg-del';
     del.textContent = '🗑';
     del.title = 'Borrar mensaje';
     del.addEventListener('click', () => {
@@ -782,10 +832,64 @@ function appendMessage(msg) {
         state.socket.emit('chat-delete', { channel: msg.channel || state.currentChannelId, id: msg.id });
       }
     });
-    row.appendChild(del);
+    acts.appendChild(del);
   }
+  row.appendChild(acts);
   list.appendChild(row);
 }
+
+/* ---- Reacciones ---- */
+const REACT_EMOJIS = ['❤️', '😂', '😮', '😢', '👍', '🔥', '💜', '😍'];
+
+function renderReactionChips(container, channel, id, reactions) {
+  container.innerHTML = '';
+  for (const [emoji, users] of Object.entries(reactions || {})) {
+    if (!users.length) continue;
+    const chip = document.createElement('button');
+    chip.className = users.includes(state.me.id) ? 'mine' : '';
+    chip.textContent = `${emoji} ${users.length}`;
+    chip.title = users.map((u) => getUser(u).name).join(', ');
+    chip.addEventListener('click', () => {
+      state.socket.emit('react', { channel, id, emoji });
+    });
+    container.appendChild(chip);
+  }
+}
+
+let reactTarget = null;
+function openReactPicker(msg) {
+  reactTarget = msg;
+  const card = $('reactCard');
+  card.innerHTML = '';
+  for (const e of REACT_EMOJIS) {
+    const b = document.createElement('button');
+    b.textContent = e;
+    b.addEventListener('click', () => {
+      state.socket.emit('react', { channel: reactTarget.channel || state.currentChannelId, id: reactTarget.id, emoji: e });
+      $('reactOverlay').classList.add('hidden');
+    });
+    card.appendChild(b);
+  }
+  $('reactOverlay').classList.remove('hidden');
+}
+$('reactOverlay').addEventListener('click', (e) => {
+  if (e.target.id === 'reactOverlay') $('reactOverlay').classList.add('hidden');
+});
+
+/* ---- Responder / citar ---- */
+let replyTo = null;
+function startReply(msg) {
+  replyTo = msg;
+  const snippet = msg.type === 'image' ? '📷 Foto' : (msg.text || '').slice(0, 60);
+  $('replyText').textContent = `↩ Respondiendo a ${getUser(msg.from).name}: ${snippet}`;
+  $('replyBar').classList.remove('hidden');
+  $('msgInput').focus();
+}
+function cancelReply() {
+  replyTo = null;
+  $('replyBar').classList.add('hidden');
+}
+$('btnCancelReply').addEventListener('click', cancelReply);
 
 // El nombre toma el color del rol más alto (como Discord)
 function roleColorFor(userId) {
@@ -823,7 +927,10 @@ function sendText() {
   const input = $('msgInput');
   const text = input.value.trim();
   if (!text || !state.currentChannelId) return;
-  state.socket.emit('chat', { channel: state.currentChannelId, type: 'text', text });
+  const data = { channel: state.currentChannelId, type: 'text', text };
+  if (replyTo) data.replyTo = replyTo.id;
+  state.socket.emit('chat', data);
+  cancelReply();
   input.value = '';
   input.focus();
 }
@@ -1587,6 +1694,7 @@ async function joinVoice(channelId, withVideo) {
   $('voiceLobby').classList.add('hidden');
   $('voiceRoom').classList.remove('hidden');
   state.voice.selfTile = makeTile(state.me, true); // mi propio cuadro en la cuadrícula
+  if (!state.voice.micOn) state.voice.selfTile.root.classList.add('muted');
   state.voice.selfMeter = makeMeter(state.voice.micStream);
   // recuadro verde en quien está hablando (como Discord)
   state.voice.speakTimer = setInterval(() => {
@@ -2030,6 +2138,7 @@ $('btnMic').addEventListener('click', () => {
   if (state.voice.micStream) state.voice.micStream.getAudioTracks().forEach((t) => (t.enabled = state.voice.micOn));
   $('btnMic').classList.toggle('active', state.voice.micOn);
   $('btnMic').classList.toggle('off', !state.voice.micOn);
+  if (state.voice.selfTile) state.voice.selfTile.root.classList.toggle('muted', !state.voice.micOn);
   sendVoiceStatus();
 });
 

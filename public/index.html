@@ -11,7 +11,7 @@
   <link rel="manifest" href="/manifest.json" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icon-180.png" />
-  <link rel="stylesheet" href="/style.css?v=11" />
+  <link rel="stylesheet" href="/style.css?v=12" />
 </head>
 <body>
 
@@ -68,6 +68,10 @@
       </div>
       <div id="messages" class="messages"></div>
       <div id="typingIndicator" class="typing hidden"><span class="tdots"><i></i><i></i><i></i></span><span id="typingText">escribiendo…</span></div>
+      <div id="replyBar" class="reply-bar hidden">
+        <span id="replyText">Respondiendo…</span>
+        <button id="btnCancelReply">✕</button>
+      </div>
       <div class="input-bar" id="inputBar">
         <button id="btnPhoto" class="icon-btn" title="Enviar foto">📷</button>
         <input id="photoInput" type="file" accept="image/*" class="hidden" />
@@ -294,9 +298,14 @@
     </div>
   </div>
 
+  <!-- Selector de emoji para reaccionar -->
+  <div id="reactOverlay" class="overlay hidden">
+    <div class="react-card" id="reactCard"></div>
+  </div>
+
   <div id="toast" class="toast hidden"></div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/app.js?v=11"></script>
+  <script src="/app.js?v=12"></script>
 </body>
 </html>
