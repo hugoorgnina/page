@@ -257,6 +257,12 @@ input::placeholder { color: var(--muted2); }
 .tile.expanded video { object-fit: contain; }
 .tile:fullscreen { background: #000; }
 .tile:fullscreen video { object-fit: contain; }
+/* Recuadro verde de "está hablando" (como Discord) */
+.tile.speaking::after {
+  content: ""; position: absolute; inset: 0; border: 3px solid var(--green);
+  border-radius: 10px; pointer-events: none; z-index: 4;
+}
+
 .voice-alone {
   position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 6;
   background: rgba(30,31,34,.9); color: var(--muted); font-size: 13px;

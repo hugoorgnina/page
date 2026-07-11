@@ -474,6 +474,29 @@ function connectSocket() {
     try { await Promise.all([loadUsers(), loadServers()]); renderAll(); } catch (_) {}
   });
 
+  // Si el servidor se reinició, la sesión vieja ya no vale: vuelve a entrar
+  // solo con las credenciales guardadas y reconecta (evita quedarse "zombi")
+  let reauthing = false;
+  s.on('connect_error', async () => {
+    if (reauthing) return;
+    reauthing = true;
+    try {
+      const saved = JSON.parse(localStorage.getItem('creds') || 'null');
+      if (saved) {
+        const r = await api('/api/auth', { body: saved });
+        state.token = r.token;
+        localStorage.setItem('token', r.token);
+        await restoreAvatarIfNeeded(r.me);
+        await loadCore();
+        if (!findMyChannel(state.currentChannelId) && !isDm(state.currentChannelId)) pickInitialChannel();
+        renderAll();
+        s.auth = { token: r.token };
+        s.connect();
+      }
+    } catch (_) {}
+    setTimeout(() => { reauthing = false; }, 4000);
+  });
+
   s.on('presence', ({ online }) => {
     state.lastOnline = online;
     setPeerStatusOnline();
@@ -560,11 +583,11 @@ function connectSocket() {
   s.on('rtc', ({ channel, from, payload }) => {
     if (channel !== state.voice.channel) return;
     let peer = state.voice.peers.get(from);
-    // si me llega una oferta nueva y mi conexión con él lleva rato trabada,
-    // la tiro y empiezo de cero con esta oferta
+    // si me llega una oferta nueva y mi conexión con él no está sana
+    // desde hace rato, la tiro y empiezo de cero con esta oferta
     if (peer && payload.description && payload.description.type === 'offer'
-        && (peer.pc.connectionState === 'new' || peer.pc.connectionState === 'failed')
-        && Date.now() - peer.createdAt > 8000) {
+        && peer.pc.connectionState !== 'connected'
+        && Date.now() - Math.max(peer.lastOk || 0, peer.createdAt) > 8000) {
       removePeer(from);
       peer = null;
     }
@@ -1562,6 +1585,19 @@ async function joinVoice(channelId, withVideo) {
   $('voiceLobby').classList.add('hidden');
   $('voiceRoom').classList.remove('hidden');
   state.voice.selfTile = makeTile(state.me, true); // mi propio cuadro en la cuadrícula
+  state.voice.selfMeter = makeMeter(state.voice.micStream);
+  // recuadro verde en quien está hablando (como Discord)
+  state.voice.speakTimer = setInterval(() => {
+    selfAudioLevel().then((lvl) => {
+      const st = state.voice.selfTile;
+      if (st) st.root.classList.toggle('speaking', state.voice.micOn && lvl > 0.03);
+    });
+    for (const peer of state.voice.peers.values()) {
+      remoteAudioLevel(peer).then((lvl) => {
+        if (peer.tile) peer.tile.root.classList.toggle('speaking', lvl > 0.02);
+      });
+    }
+  }, 200);
   setMediaSession(true);
   state.socket.emit('voice-join', { channel: channelId });
   requestWakeLock();
@@ -1574,6 +1610,9 @@ function leaveVoice(silent) {
   state.socket.emit('voice-leave');
   state.voice.channel = null;
   for (const peerId of [...state.voice.peers.keys()]) removePeer(peerId);
+  clearInterval(state.voice.speakTimer);
+  stopMeter(state.voice.selfMeter);
+  state.voice.selfMeter = null;
   stopLocalMedia();
   if (state.voice.selfTile) { state.voice.selfTile.root.remove(); state.voice.selfTile = null; }
   $('tiles').classList.remove('has-expanded');
@@ -1627,18 +1666,21 @@ function createPeer(member) {
   };
   state.voice.peers.set(member.id, peer);
 
-  // Vigilante: si en ~9s la conexión no arrancó, se recrea sola
+  // Vigilante permanente: si la conexión no arranca en ~10s, o se cae a
+  // mitad de llamada y no se recupera en ~8s, se recrea sola
+  peer.lastOk = 0;
   peer.watchdog = setInterval(() => {
     const st = peer.pc.connectionState;
-    if (st === 'connected') { clearInterval(peer.watchdog); peer.watchdog = null; return; }
-    if ((st === 'new' || st === 'failed') && Date.now() - peer.createdAt > 9000) {
+    if (st === 'connected') { peer.lastOk = Date.now(); return; }
+    const stuckMs = Date.now() - Math.max(peer.lastOk, peer.createdAt);
+    if (st === 'failed' || st === 'closed' || stuckMs > (peer.lastOk ? 8000 : 10000)) {
       const m = (state.voiceStates[state.voice.channel] || []).find((x) => x.id === peer.id);
       removePeer(peer.id);
       // reintenta el lado de ID menor; el otro la recreará al recibir la oferta
       if (m && String(state.me.id) < String(peer.id)) createPeer(m);
       updateTilesLayout();
     }
-  }, 3000);
+  }, 2000);
 
   // 3 canales fijos: micro + video (cámara/pantalla) + audio de la transmisión.
   // Se cambian con replaceTrack, sin renegociar.
@@ -1699,6 +1741,64 @@ function attachPeerAudio(peer, track) {
   $('remoteAudios').appendChild(peer.audioEl);
   applyPeerVolume(peer);
   peer.audioEl.play().catch(() => {});
+  peer.meter = makeMeter(stream); // para el recuadro verde de "está hablando"
+}
+
+// Medidor de voz: solo analiza, no reproduce (no duplica el audio)
+function makeMeter(stream) {
+  try {
+    const c = ctx();
+    const src = c.createMediaStreamSource(stream);
+    const an = c.createAnalyser();
+    an.fftSize = 512;
+    src.connect(an);
+    return { an, src, data: new Uint8Array(an.fftSize) };
+  } catch (_) { return null; }
+}
+function meterLevel(meter) {
+  if (!meter) return 0;
+  meter.an.getByteTimeDomainData(meter.data);
+  let max = 0;
+  for (let i = 0; i < meter.data.length; i++) {
+    const v = Math.abs(meter.data[i] - 128);
+    if (v > max) max = v;
+  }
+  return max;
+}
+function stopMeter(meter) {
+  if (!meter) return;
+  try { meter.src.disconnect(); meter.an.disconnect(); } catch (_) {}
+}
+
+// Nivel de voz del otro, sacado de las estadísticas oficiales de WebRTC
+async function remoteAudioLevel(peer) {
+  try {
+    const stats = await peer.pc.getStats();
+    let lvl = 0;
+    stats.forEach((r) => {
+      if (r.type === 'inbound-rtp' && r.kind === 'audio' && typeof r.audioLevel === 'number') {
+        lvl = Math.max(lvl, r.audioLevel);
+      }
+    });
+    return lvl;
+  } catch (_) { return 0; }
+}
+
+// Mi propio nivel: analizador local + estadísticas del micro (lo que sea mayor)
+async function selfAudioLevel() {
+  let lvl = meterLevel(state.voice.selfMeter) / 128;
+  const first = [...state.voice.peers.values()][0];
+  if (first) {
+    try {
+      const stats = await first.pc.getStats();
+      stats.forEach((r) => {
+        if (r.type === 'media-source' && r.kind === 'audio' && typeof r.audioLevel === 'number') {
+          lvl = Math.max(lvl, r.audioLevel);
+        }
+      });
+    } catch (_) {}
+  }
+  return lvl;
 }
 
 function applyPeerVolume(peer, forceSimple) {
@@ -1777,8 +1877,15 @@ document.addEventListener('visibilitychange', () => {
     applyPeerVolume(peer, document.hidden);
     applyStreamVolume(peer, document.hidden);
   }
-  if (!document.hidden && audioCtx && audioCtx.state === 'suspended') {
-    audioCtx.resume().catch(() => {});
+  if (!document.hidden) {
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+    // reanuda videos que el celular pausó en segundo plano (pantalla en negro)
+    document.querySelectorAll('#tiles video').forEach((v) => {
+      if (v.srcObject) v.play().catch(() => {});
+    });
+    for (const el of document.querySelectorAll('#remoteAudios audio')) {
+      el.play().catch(() => {});
+    }
   }
 });
 
@@ -1811,6 +1918,7 @@ function removePeer(peerId) {
   peer.pc.close();
   try { if (peer.srcNode) peer.srcNode.disconnect(); if (peer.gain) peer.gain.disconnect(); } catch (_) {}
   try { if (peer.streamSrc) peer.streamSrc.disconnect(); if (peer.streamGain) peer.streamGain.disconnect(); } catch (_) {}
+  stopMeter(peer.meter);
   if (peer.audioEl) peer.audioEl.remove();
   if (peer.streamAudioEl) peer.streamAudioEl.remove();
   if (peer.tile) {
@@ -1831,6 +1939,10 @@ function makeTile(member, isSelf) {
   video.setAttribute('playsinline', '');
   if (isSelf) video.setAttribute('muted', '');
   video.setAttribute('autopictureinpicture', ''); // salta a ventanita al salir de la app (Chrome)
+  // si el navegador pausa el video (pantalla en negro), lo reanuda solo
+  video.addEventListener('pause', () => {
+    if (!document.hidden && video.srcObject) video.play().catch(() => {});
+  });
   root.appendChild(video);
   const wrap = document.createElement('div');
   wrap.className = 'tile-avatar-wrap';
