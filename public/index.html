@@ -11,7 +11,7 @@
   <link rel="manifest" href="/manifest.json" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icon-180.png" />
-  <link rel="stylesheet" href="/style.css?v=10" />
+  <link rel="stylesheet" href="/style.css?v=11" />
 </head>
 <body>
 
@@ -169,6 +169,11 @@
       <button id="btnSaveProfile" class="btn-primary">Guardar perfil</button>
 
       <h3 class="settings-section">🎙️ Voz y audio</h3>
+      <label>Micrófono</label>
+      <select id="micSelect"></select>
+      <label>Salida (auriculares / altavoces)</label>
+      <select id="spkSelect"></select>
+      <p id="spkHint" class="auth-hint hidden" style="text-align:left">En este navegador la salida la controla el sistema (en iPhone se cambia desde el propio teléfono).</p>
       <div class="setting-row"><span>Supresión de ruido</span><button id="swNoise" class="switch"></button></div>
       <div class="setting-row"><span>Cancelación de eco</span><button id="swEcho" class="switch"></button></div>
       <div class="setting-row"><span>Volumen automático del micro</span><button id="swAgc" class="switch"></button></div>
@@ -292,6 +297,6 @@
   <div id="toast" class="toast hidden"></div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/app.js?v=10"></script>
+  <script src="/app.js?v=11"></script>
 </body>
 </html>

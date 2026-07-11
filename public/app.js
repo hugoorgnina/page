@@ -8,13 +8,15 @@ const $ = (id) => document.getElementById(id);
 const CALL_CHANNEL = 'llamada';
 
 // Preferencias del usuario (se guardan en el aparato)
-const PREFS_DEFAULT = { noise: true, echo: true, agc: true, res: 720, fps: 30 };
+const PREFS_DEFAULT = { noise: true, echo: true, agc: true, res: 720, fps: 30, micId: '', spkId: '' };
 let prefs = { ...PREFS_DEFAULT };
 try { prefs = { ...PREFS_DEFAULT, ...JSON.parse(localStorage.getItem('prefs') || '{}') }; } catch (_) {}
 function savePrefs() { localStorage.setItem('prefs', JSON.stringify(prefs)); }
 
 function micConstraints() {
-  return { echoCancellation: prefs.echo, noiseSuppression: prefs.noise, autoGainControl: prefs.agc };
+  const c = { echoCancellation: prefs.echo, noiseSuppression: prefs.noise, autoGainControl: prefs.agc };
+  if (prefs.micId) c.deviceId = { ideal: prefs.micId };
+  return c;
 }
 function screenConstraints() {
   const h = [480, 720, 1080].includes(prefs.res) ? prefs.res : 720;
@@ -1739,6 +1741,7 @@ function attachPeerAudio(peer, track) {
   peer.audioEl.autoplay = true;
   peer.audioEl.srcObject = stream;
   $('remoteAudios').appendChild(peer.audioEl);
+  applySinkTo(peer.audioEl);
   applyPeerVolume(peer);
   peer.audioEl.play().catch(() => {});
   peer.meter = makeMeter(stream); // para el recuadro verde de "está hablando"
@@ -1837,6 +1840,7 @@ function attachStreamAudio(peer, track) {
   peer.streamAudioEl.autoplay = true;
   peer.streamAudioEl.srcObject = stream;
   $('remoteAudios').appendChild(peer.streamAudioEl);
+  applySinkTo(peer.streamAudioEl);
   applyStreamVolume(peer, document.hidden);
   peer.streamAudioEl.play().catch(() => {});
 }
@@ -2343,12 +2347,19 @@ async function applyMicPrefs() {
   if (s.noiseSuppression === want.noiseSuppression
     && s.echoCancellation === want.echoCancellation
     && s.autoGainControl === want.autoGainControl) return;
-  // Este navegador no lo cambia en vivo: apaga el micro viejo primero
-  // (si sigue activo, el nuevo hereda sus ajustes) y pide uno nuevo
-  track.stop();
+  await reacquireMic();
+}
+
+// Pide el micrófono de nuevo (con los ajustes y dispositivo elegidos)
+// y lo intercambia en la llamada sin cortarla
+async function reacquireMic() {
+  const stream = state.voice.micStream;
+  if (!stream) return;
+  // apaga el viejo primero: si sigue activo, el nuevo hereda sus ajustes
+  stream.getAudioTracks().forEach((t) => t.stop());
   let fresh = null;
   try {
-    fresh = await navigator.mediaDevices.getUserMedia({ audio: want });
+    fresh = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
   } catch (_) {
     try { fresh = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (_) { return; }
   }
@@ -2359,12 +2370,73 @@ async function applyMicPrefs() {
     if (sender) sender.replaceTrack(freshTrack);
   }
   state.voice.micStream = fresh;
+  // el medidor de "estás hablando" también cambia al micro nuevo
+  stopMeter(state.voice.selfMeter);
+  state.voice.selfMeter = makeMeter(fresh);
 }
 // Aplica resolución/fps a la pantalla compartida en vivo
 async function applyScreenPrefs() {
   if (state.voice.screenTrack) {
     try { await state.voice.screenTrack.applyConstraints(screenConstraints()); } catch (_) {}
   }
+}
+
+/* ---- Elegir micrófono y salida (auriculares/altavoces) ---- */
+
+const canPickOutput = 'setSinkId' in HTMLMediaElement.prototype;
+
+async function populateDeviceSelects() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const fill = (sel, kind, savedId, defLabel) => {
+      sel.innerHTML = '';
+      const def = document.createElement('option');
+      def.value = '';
+      def.textContent = defLabel;
+      sel.appendChild(def);
+      let i = 0;
+      for (const d of devices) {
+        if (d.kind !== kind || d.deviceId === 'default') continue;
+        i++;
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `${kind === 'audioinput' ? 'Micrófono' : 'Salida'} ${i}`;
+        sel.appendChild(opt);
+      }
+      sel.value = savedId && [...sel.options].some((o) => o.value === savedId) ? savedId : '';
+    };
+    fill($('micSelect'), 'audioinput', prefs.micId, 'Micrófono predeterminado');
+    fill($('spkSelect'), 'audiooutput', prefs.spkId, 'Salida predeterminada');
+  } catch (_) {}
+  $('spkSelect').classList.toggle('hidden', !canPickOutput);
+  $('spkHint').classList.toggle('hidden', canPickOutput);
+}
+
+$('micSelect').addEventListener('change', () => {
+  prefs.micId = $('micSelect').value;
+  savePrefs();
+  if (state.voice.micStream) reacquireMic();
+  toast('Micrófono cambiado 🎙️');
+});
+
+// Aplica la salida elegida a un reproductor (y a los futuros)
+function applySinkTo(el) {
+  if (canPickOutput && prefs.spkId) el.setSinkId(prefs.spkId).catch(() => {});
+}
+$('spkSelect').addEventListener('change', () => {
+  prefs.spkId = $('spkSelect').value;
+  savePrefs();
+  document.querySelectorAll('#remoteAudios audio').forEach((el) => {
+    if (canPickOutput) el.setSinkId(prefs.spkId || '').catch(() => {});
+  });
+  if (audioCtx && audioCtx.setSinkId) audioCtx.setSinkId(prefs.spkId || '').catch(() => {});
+  toast('Salida de audio cambiada 🎧');
+});
+
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+  navigator.mediaDevices.addEventListener('devicechange', () => {
+    if (!$('settingsOverlay').classList.contains('hidden')) populateDeviceSelects();
+  });
 }
 
 function bindSwitch(id, key) {
@@ -2395,6 +2467,7 @@ $('btnSettings').addEventListener('click', () => {
   $('settingsName').value = state.me.name;
   setAvatar($('myAvatar'), state.me);
   renderPrefsUI();
+  populateDeviceSelects();
   $('settingsOverlay').classList.remove('hidden');
 });
 $('btnCloseSettings').addEventListener('click', () => $('settingsOverlay').classList.add('hidden'));

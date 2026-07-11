@@ -39,6 +39,11 @@ input {
   background: var(--bg-deep); border: none; border-radius: 8px; padding: 12px 14px; outline: none;
 }
 input::placeholder { color: var(--muted2); }
+select {
+  font-family: inherit; font-size: 15px; color: var(--text-strong);
+  background: var(--bg-deep); border: none; border-radius: 8px; padding: 12px 10px; outline: none;
+  width: 100%; appearance: none; -webkit-appearance: none;
+}
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--bg-deep); border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
